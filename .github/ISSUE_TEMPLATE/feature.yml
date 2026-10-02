@@ -1,0 +1,32 @@
+name: 기능
+description: 새 기능이나 개선할 동작
+title: "[Feature] "
+labels: ["type: feature"]
+body:
+  - type: textarea
+    id: why
+    attributes:
+      label: 왜 필요한가
+      description: 이 기능이 없으면 무엇이 안 되는지
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 무엇을 만드는가
+      description: 완료되면 사용자가 무엇을 할 수 있는지
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: 완료 조건
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 참고 자료
+      description: 관련 이슈, 문서, 디자인 링크

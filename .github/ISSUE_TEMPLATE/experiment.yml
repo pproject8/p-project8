@@ -1,0 +1,41 @@
+name: 실험
+description: 모델·데이터 실험. 최종발표의 "Baseline 대비 성능 비교" 근거가 된다
+title: "[Exp] "
+labels: ["type: experiment", "area: model"]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 가설
+      description: 무엇을 바꾸면 무엇이 좋아질 것이라고 보는가
+    validations:
+      required: true
+  - type: input
+    id: baseline
+    attributes:
+      label: Baseline
+      description: 비교 대상 (기존 방법, 이전 실험 이슈 번호 등)
+    validations:
+      required: true
+  - type: input
+    id: metric
+    attributes:
+      label: 평가 지표
+      description: 예) Accuracy, F1, BLEU, latency
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: 데이터 · 설정
+      description: 데이터셋, 분할, 하이퍼파라미터, 시드, 실행 커맨드
+  - type: textarea
+    id: result
+    attributes:
+      label: 결과
+      description: 실험이 끝나면 채운다. Baseline 과 나란히 표로 적는다
+      value: |
+        | 모델 | 지표 | 비고 |
+        | --- | --- | --- |
+        | Baseline |  |  |
+        | 이번 실험 |  |  |
