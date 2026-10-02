@@ -2,6 +2,7 @@ name: 버그
 description: 잘못 동작하는 것
 title: "[Bug] "
 labels: ["type: bug"]
+projects: ["pproject8/2"]
 body:
   - type: textarea
     id: repro

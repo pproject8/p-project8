@@ -2,6 +2,7 @@ name: 실험
 description: 모델·데이터 실험. 최종발표의 "Baseline 대비 성능 비교" 근거가 된다
 title: "[Exp] "
 labels: ["type: experiment", "area: model"]
+projects: ["pproject8/2"]
 body:
   - type: textarea
     id: hypothesis

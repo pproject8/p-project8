@@ -2,6 +2,7 @@ name: 기능
 description: 새 기능이나 개선할 동작
 title: "[Feature] "
 labels: ["type: feature"]
+projects: ["pproject8/2"]
 body:
   - type: textarea
     id: why
