@@ -1,15 +1,17 @@
 # p-project8
 
-2026 AI P-실무프로젝트 8팀 저장소.
+2026 AI P-실무프로젝트 AI 2분반 8조(에잇비트) 저장소.
 
-> 주제 확정 전이다. 확정되면 프로젝트 소개를 여기에 채운다.
+**Linux 환경 On-Device AI 워크로드 분석** (SK하이닉스 기업 수요 제안 주제). 리눅스 노트북에서 llama.cpp로 LLM을 CPU 추론하면서 CPU 스레드 수, 메모리 한도, 저장장치 읽기 대역폭을 하나씩 제한해 Loading, Prefill, Decode 단계별 병목을 측정한다. 측정 파이프라인과 데이터는 이 저장소에, 설계와 실험 결과는 [Wiki](https://github.com/pproject8/p-project8/wiki)에 정리한다.
 
 ## 링크
 
 | 무엇 | 어디 |
 | --- | --- |
 | 이슈 · 작업 관리 | [Issues](https://github.com/pproject8/p-project8/issues) · [Projects 보드](https://github.com/orgs/pproject8/projects/2) |
-| Proposal · 진행 상황 (발표 때 공유) | [Wiki](https://github.com/pproject8/p-project8/wiki) |
+| 프로젝트 소개, 실험 설계, 운영 방식 (발표 때 공유) | [Wiki](https://github.com/pproject8/p-project8/wiki) |
+| 실험 결과 (실험 0 ~ 5 챕터) | [Wiki 실험 결과 목록](https://github.com/pproject8/p-project8/wiki#실험-결과) |
+| 사전발표 영상 | [YouTube](https://www.youtube.com/watch?v=nq2-ds6317k) |
 | 과목 안내 · 일정 · 회의록 | 팀 Notion |
 
 ## 작업 방식
