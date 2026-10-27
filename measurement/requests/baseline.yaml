@@ -1,0 +1,8 @@
+# 실험 0. 3B 기준 조건: llama-bench 내부 반복 10회
+# 기본값(설계안): 입력 512, 출력 128, Q4_K_M, 스레드 = 코어 수
+name: exp0-baseline
+model: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+repeat: 10
+threads: [12]          # i7-1260P 물리 코어 12개 (P4 + E8). 다른 기계는 코어 수에 맞출 것
+prompt_tokens: [512]
+gen_tokens: [128]

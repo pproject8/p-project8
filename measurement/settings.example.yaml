@@ -1,0 +1,5 @@
+bench_path: /srv/pp8/llama/llama-b11706/llama-bench
+models_dir: /srv/pp8/models
+work_dir: /srv/pp8/work
+default_model: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+condition_timeout_seconds: 3600
