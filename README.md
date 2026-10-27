@@ -4,9 +4,13 @@
 
 **Linux 환경 On-Device AI 워크로드 분석** (SK하이닉스 기업 수요 제안 주제). 리눅스 노트북에서 llama.cpp로 LLM을 CPU 추론하면서 CPU 스레드 수, 메모리 한도, 저장장치 읽기 대역폭을 하나씩 제한해 Loading, Prefill, Decode 단계별 병목을 측정한다. 측정 파이프라인과 데이터는 이 저장소에, 설계와 실험 결과는 [Wiki](https://github.com/pproject8/p-project8/wiki)에 정리한다.
 
-## 공용 측정 코드
+## 측정 실행 방법
 
-코드와 사용·설치·업데이트 안내는 [measurement/](measurement/README.md)에 있습니다. `pp8 submit baseline`으로 Llama 3.2 3B Q4_K_M 기준 요청을 제출하며, 단일 워커가 순서대로 실행합니다. 모델·머신별 설정·공용 큐·실험 결과는 노트북의 `/srv/pp8`에 별도 보관합니다.
+현재는 Tailscale과 SSH로 노트북에 접속한 뒤 **각자 홈 폴더에 코드를 클론해 직접 실행**합니다. 처음 사용하는 팀원은 [개인 폴더 측정 실행 안내](measurement/docs/personal-run.md)를 따라주세요. 접속, Python 환경 준비, 개인 설정, 짧은 3B 테스트, 조건 변경과 결과 확인 명령을 정리했습니다.
+
+개인 직접 실행에는 공용 큐나 공통 잠금을 적용하지 않으므로 측정 시간을 조율합니다. 모델과 llama-bench는 준비된 공용 파일을 읽고, 결과는 각자의 `~/pp8-work/results`에 저장합니다.
+
+기존 공용 큐·상시 워커의 운영 및 배포 안내는 [measurement/README.md](measurement/README.md)에 있습니다.
 
 현재는 Prefill·Decode 처리량 측정을 지원합니다. 자원 제한·모니터링·로딩 시간·TTFT 측정은 후속 구현 대상입니다.
 
