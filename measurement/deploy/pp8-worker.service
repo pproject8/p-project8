@@ -1,0 +1,18 @@
+[Unit]
+Description=PP8 shared measurement worker
+After=local-fs.target
+
+[Service]
+Type=simple
+User=jungwon
+Group=pp8
+WorkingDirectory=/srv/pp8/repo
+ExecStart=/usr/bin/python3 -u /srv/pp8/repo/measurement/src/team.py --settings /srv/pp8/settings.yaml worker
+Restart=on-failure
+RestartSec=5
+UMask=0007
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# 실험 1. CPU 스레드 스윕: 스레드만 바꾸고 나머지는 기본값으로 고정
+name: exp1-threads
+model: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+repeat: 5
+threads: [1, 2, 4, 8, 12, 16]
+prompt_tokens: [512]
+gen_tokens: [128]
+shuffle: true          # 열/캐시 영향을 분산하려고 실행 순서를 섞는다
+seed: 1                # 같은 순서로 재현하려면 고정, 지우면 매번 새로 뽑고 meta.json에 기록

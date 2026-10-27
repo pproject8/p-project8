@@ -1,0 +1,9 @@
+# 모델, 머신별 설정, 실행 상태와 원시 결과는 별도 보관
+*.gguf
+settings.yaml
+settings.yaml.bak*
+.venv/
+.test-deps/
+__pycache__/
+*.pyc
+measurement/work/
