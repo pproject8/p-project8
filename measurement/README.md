@@ -71,6 +71,10 @@ measurement/
 | interval_s | 해당 CPU 사용률을 계산한 실제 관측 구간 길이 |
 | cpu_percent | 구간 CPU 사용률. 논리 CPU 1개를 완전히 쓰면 100% |
 | cpu_time_s | 프로세스의 누적 user+system CPU 시간 |
+| cpu_freq_avg_mhz, cpu_freq_min_mhz, cpu_freq_max_mhz | 해당 관측에서 읽힌 논리 CPU 클럭의 평균·최소·최대 (MHz) |
+| cpu_freq_mhz_by_cpu | 논리 CPU 번호별 MHz 값의 JSON. 미수집 CPU는 null |
+| cpu_freq_cpus_total, cpu_freq_cpus_read | 관측 대상 논리 CPU 수와 읽기 성공 개수 |
+| cpu_freq_source, cpu_freq_status | scaling_cur_freq 출처와 ok/partial/unavailable/process_exited 상태 |
 
 여러 스레드를 사용하면 cpu_percent가 100%를 넘을 수 있습니다. 예를 들어 400%는 해당 구간에 논리 CPU 약 4개 분량의 CPU 시간을 사용했다는 뜻이며, 물리 코어 4개에 고정됐다는 의미는 아닙니다. 전체 노트북 CPU 사용률이 아니라 해당 PID의 모든 스레드가 사용한 값이고 별도 자식 프로세스는 포함하지 않습니다.
 
@@ -79,6 +83,20 @@ measurement/
 `meta.json`의 `cpu_monitor.conditions`에는 조건별 표본 수, 시간 가중 평균(`avg_cpu_percent`), 관측 구간 최대값(`max_cpu_percent`), 누적 CPU 시간과 상태를 저장합니다. 최대값은 관측 구간 평균 중 최대이며 순간 피크가 아닙니다. 종료 코드가 0이 아니거나 시간 초과된 조건도 수집된 CPU 기록은 보존합니다. `/proc` 관찰에 실패하면 상태와 오류를 기록하며 알 수 없는 사용률을 0으로 채우지 않습니다.
 
 Windows 등 비Linux 환경에서는 기존 벤치마크 실행을 유지하지만 CPU 기록은 지원하지 않습니다. 이때 monitor.csv는 헤더만 생성되고 메타데이터에 unsupported로 표시됩니다. 과거 결과 폴더에 CPU 기록을 소급 생성하지 않습니다.
+
+### CPU 클럭 기록과 해석
+
+CPU 사용률과 같은 관측 행에서 `/sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq`를 읽고 kHz를 MHz로 변환합니다. 대상은 그 시점의 llama-bench 메인 스레드 affinity에 포함된 논리 CPU입니다. 코어 고정을 하지 않은 현재 장비에서는 보통 16개 전체가 대상이며, P/E코어와 쉬는 CPU도 섞입니다. 별도 스레드가 서로 다른 affinity를 가지면 그 스레드의 허용 CPU 집합까지 추적하지는 않습니다.
+
+**클럭 평균은 실제 작업 코어만의 평균이나 사용률 가중 평균이 아닙니다.** 드라이버가 보고한 주파수 표본이고 정확한 순간 하드웨어 클럭 또는 프로세스의 유효 클럭으로 단정하지 않습니다. P/E코어 구분이나 개별 CPU의 경향은 `cpu_freq_mhz_by_cpu` 원본으로 확인합니다. 같은 주파수 정책을 공유하는 논리 CPU는 보고값이 중복될 수 있습니다. 값은 순차적으로 읽으므로 모든 CPU가 정확히 동일한 순간의 값은 아닙니다.
+
+`meta.json`의 조건별 `frequency`에 유효 표본 수, `mean_sample_avg_mhz`(유효 관측별 CPU 평균의 단순 평균), `min_observed_mhz`, `max_observed_mhz`, 상태별 개수를 남깁니다. CPU 사용률 평균은 시간 가중 평균이지만 이 클럭 요약은 스냅샷 표본의 단순 평균입니다. 수집 실패는 빈 칸/null로 남기며 0MHz로 대체하지 않습니다.
+
+프로세스가 끝난 뒤의 최종 행은 직전 구간 CPU 사용률은 남기되, 종료 후 유휴 클럭을 작업 중 클럭으로 오해하지 않도록 클럭은 비워두고 `process_exited`로 표시합니다. 1초보다 빨리 끝나는 실행은 클럭 표본이 없을 수 있습니다. 이전 monitor.csv의 열 이름은 유지하고 새 클럭 열만 뒤에 추가합니다. 온도·거버너·클럭 제한값은 변경하지 않습니다.
+
+TPS와의 비교는 `request_id`와 `order`로 results.csv와 연결합니다. 클럭은 약 1초마다 관찰하지만 현재 TPS는 조건의 내부 반복 전체를 집계한 값이므로 초별 TPS 또는 각 반복의 정확한 계산 구간과 직접 대응하지 않습니다. 클럭이 낮을 때 TPS도 낮아지는지 탐색하는 자료이며, 이것만으로 속도 변화의 인과관계나 발열 원인을 확정하지 않습니다.
+
+출처: [Linux CPUFreq 공식 문서](https://docs.kernel.org/admin-guide/pm/cpufreq.html#policy-interface-in-sysfs).
 
 ## 로컬 개발과 테스트
 

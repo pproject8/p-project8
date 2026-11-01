@@ -1,6 +1,8 @@
 """Linux process CPU sampling without additional packages or privileges."""
 import csv
 import datetime
+import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -11,7 +13,43 @@ import time
 MONITOR_FIELDS = [
     "request_id", "order", "test", "threads", "repeat", "pid", "timestamp",
     "elapsed_s", "interval_s", "cpu_percent", "cpu_time_s",
+    "cpu_freq_avg_mhz", "cpu_freq_min_mhz", "cpu_freq_max_mhz",
+    "cpu_freq_mhz_by_cpu", "cpu_freq_cpus_total", "cpu_freq_cpus_read",
+    "cpu_freq_source", "cpu_freq_status",
 ]
+
+FREQUENCY_SOURCE = "scaling_cur_freq"
+
+
+def empty_frequencies(status):
+    return {"cpu_freq_avg_mhz": None, "cpu_freq_min_mhz": None,
+            "cpu_freq_max_mhz": None, "cpu_freq_mhz_by_cpu": "{}",
+            "cpu_freq_cpus_total": None, "cpu_freq_cpus_read": 0,
+            "cpu_freq_source": FREQUENCY_SOURCE, "cpu_freq_status": status}
+
+
+def read_cpu_frequencies(pid, root=Path("/sys/devices/system/cpu")):
+    """Snapshots for CPUs allowed by the main thread's affinity, not CPU load weighted."""
+    fields = empty_frequencies("unavailable")
+    try:
+        cpus = sorted(os.sched_getaffinity(pid))
+    except (OSError, AttributeError):
+        return fields
+    values = {}
+    for cpu in cpus:
+        try:
+            khz = float((Path(root) / f"cpu{cpu}" / "cpufreq" / FREQUENCY_SOURCE).read_text().strip())
+            values[str(cpu)] = round(khz / 1000, 3) if math.isfinite(khz) and khz > 0 else None
+        except (OSError, ValueError):
+            values[str(cpu)] = None
+    available = [v for v in values.values() if v is not None]
+    fields.update(cpu_freq_mhz_by_cpu=json.dumps(values, separators=(",", ":")),
+                  cpu_freq_cpus_total=len(cpus), cpu_freq_cpus_read=len(available))
+    if available:
+        fields.update(cpu_freq_avg_mhz=round(sum(available) / len(available), 3),
+                      cpu_freq_min_mhz=min(available), cpu_freq_max_mhz=max(available),
+                      cpu_freq_status="ok" if len(available) == len(cpus) else "partial")
+    return fields
 
 
 def parse_cpu_ticks(stat):
@@ -43,6 +81,10 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
     error = None
     started = time.monotonic()
     timed_out = False
+    frequency_means = []
+    frequency_mins = []
+    frequency_maxs = []
+    frequency_status_counts = {}
 
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         with subprocess.Popen(cmd, stdout=stdout, stderr=stderr) as proc:
@@ -51,7 +93,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
             with Path(monitor_path).open("a", newline="", encoding="utf-8") as output:
                 writer = csv.DictWriter(output, fieldnames=MONITOR_FIELDS)
 
-                def sample():
+                def sample(process_exited=False):
                     nonlocal samples, last_ticks, last_elapsed, max_percent, error
                     try:
                         ticks = parse_cpu_ticks(Path(f"/proc/{proc.pid}/stat").read_text())
@@ -63,8 +105,17 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                     if window <= 0 or ticks < last_ticks:
                         return
                     percent = (ticks - last_ticks) / ticks_per_second / window * 100
+                    # Once the process exits, CPU time for its final interval is still
+                    # valid, but a new clock snapshot could describe an idle CPU instead.
+                    freq = empty_frequencies("process_exited") if process_exited else read_cpu_frequencies(proc.pid)
+                    status = freq["cpu_freq_status"]
+                    frequency_status_counts[status] = frequency_status_counts.get(status, 0) + 1
+                    if freq["cpu_freq_avg_mhz"] is not None:
+                        frequency_means.append(freq["cpu_freq_avg_mhz"])
+                        frequency_mins.append(freq["cpu_freq_min_mhz"])
+                        frequency_maxs.append(freq["cpu_freq_max_mhz"])
                     writer.writerow({
-                        **context, "pid": proc.pid,
+                        **context, **freq, "pid": proc.pid,
                         "timestamp": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
                         "elapsed_s": f"{elapsed:.6f}", "interval_s": f"{window:.6f}",
                         "cpu_percent": f"{percent:.3f}",
@@ -80,12 +131,12 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                         exited = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                         elapsed = time.monotonic() - started
                         if exited is not None:
-                            sample()
+                            sample(process_exited=True)
                             break
                         if timeout is not None and elapsed >= timeout:
                             proc.kill()
                             os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
-                            sample()
+                            sample(process_exited=True)
                             timed_out = True
                             break
                         if elapsed >= next_sample:
@@ -114,6 +165,13 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
         "cpu_time_s": round(last_ticks / ticks_per_second, 6) if samples else None,
         "avg_cpu_percent": round(last_ticks / ticks_per_second / last_elapsed * 100, 3) if samples else None,
         "max_cpu_percent": round(max_percent, 3) if samples else None,
+        "frequency": {
+            "source": FREQUENCY_SOURCE, "unit": "MHz",
+            "samples": len(frequency_means), "status_counts": frequency_status_counts,
+            "mean_sample_avg_mhz": round(sum(frequency_means) / len(frequency_means), 3) if frequency_means else None,
+            "min_observed_mhz": min(frequency_mins) if frequency_mins else None,
+            "max_observed_mhz": max(frequency_maxs) if frequency_maxs else None,
+        },
     }
     if error:
         summary["error"] = error
