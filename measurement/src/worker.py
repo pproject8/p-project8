@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from cpu_monitor import MONITOR_FIELDS, run_monitored
 
 FIELDS = ["request_id", "time", "cpu", "build", "model", "threads",
           "repeat", "test", "avg_ts", "stddev_ts", "order"]
@@ -132,6 +133,9 @@ def run_request(request_path, settings, req_id=None):
     results_csv = out_dir / "results.csv"
     with open(results_csv, "w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=FIELDS).writeheader()
+    monitor_csv = out_dir / "monitor.csv"
+    with monitor_csv.open("w", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=MONITOR_FIELDS).writeheader()
 
     meta = {
         "request_id": req_id,
@@ -149,6 +153,13 @@ def run_request(request_path, settings, req_id=None):
         "seed": None,
         "ok": 0,
         "failed": 0,
+        "cpu_monitor": {
+            "backend": "linux_proc_stat" if sys.platform.startswith("linux") else "unsupported",
+            "interval_seconds": 1.0,
+            "percent_basis": "100% = one logical CPU fully utilized; may exceed 100%",
+            "scope": "llama-bench process including loading, warmup and all internal repetitions; excludes child processes",
+            "conditions": [],
+        },
     }
     write_json(out_dir / "meta.json", meta)
 
@@ -164,16 +175,24 @@ def run_request(request_path, settings, req_id=None):
             cmd = [str(bench), "-m", str(model), "-p", str(p), "-n", str(n),
                    "-t", str(t), "-r", str(req["repeat"]), "-o", "csv"]
             log.write(f"[{i}/{len(combos)}] {' '.join(cmd)}\n")
+            context = {"request_id": req_id, "order": i,
+                       "test": f"pp{p}" if n == 0 else f"tg{n}",
+                       "threads": t, "repeat": req["repeat"]}
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True,
-                                        encoding="utf-8", errors="replace",
-                                        timeout=settings.get("condition_timeout_seconds", 3600))
-            except subprocess.TimeoutExpired:
+                result = run_monitored(cmd, monitor_csv, context,
+                                       timeout=settings.get("condition_timeout_seconds", 3600))
+            except subprocess.TimeoutExpired as exc:
+                meta["cpu_monitor"]["conditions"].append(
+                    getattr(exc, "monitor_summary", {**context, "status": "unavailable", "samples": 0}))
                 meta["failed"] += 1
                 log.write("  실패: 조건 실행 시간 초과\n")
                 log.flush()
                 write_json(out_dir / "meta.json", meta)
                 continue
+            summary = getattr(result, "monitor_summary", {**context, "status": "unavailable", "samples": 0})
+            meta["cpu_monitor"]["conditions"].append(summary)
+            if summary["status"] != "ok":
+                log.write(f"  CPU 기록 상태: {summary['status']} {summary.get('error', '')}\n")
             if result.returncode != 0:
                 meta["failed"] += 1
                 log.write(f"  실패 (종료 코드 {result.returncode})\n{result.stderr}\n")

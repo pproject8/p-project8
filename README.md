@@ -12,7 +12,7 @@
 
 기존 공용 큐·상시 워커의 운영 및 배포 안내는 [measurement/README.md](measurement/README.md)에 있습니다.
 
-현재는 Prefill·Decode 처리량 측정을 지원합니다. 자원 제한·모니터링·로딩 시간·TTFT 측정은 후속 구현 대상입니다.
+현재는 Prefill·Decode 처리량과 Linux 측정 프로세스의 CPU 사용률 기록(`monitor.csv`)을 지원합니다. 메모리·디스크·온도 모니터링, 자원 제한, 로딩 시간·TTFT 측정은 후속 구현 대상입니다.
 
 ## 링크
 
