@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from cpu_monitor import MONITOR_FIELDS, parse_cpu_ticks, read_cpu_frequencies, run_monitored
+from cpu_monitor import MONITOR_FIELDS, parse_cpu_ticks, read_cpu_frequencies, run_monitored, parse_memory_status, read_process_memory
 
 
 class StatParsingTests(unittest.TestCase):
@@ -125,8 +125,6 @@ class CpuMonitorTests(unittest.TestCase):
         self.assertEqual(self.rows(), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux process monitoring")
@@ -156,3 +154,64 @@ class LoadingBoundaryTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired) as caught:
                 run_monitored([sys.executable, "-c", code], Path(tmp)/"monitor.csv", {}, .25)
             self.assertEqual(caught.exception.monitor_summary["loading"]["status"], "ok")
+
+
+class MemoryParsingTests(unittest.TestCase):
+    def test_units_and_real_zero_swap(self):
+        result = parse_memory_status("VmRSS: 1024 kB\nVmHWM: 2048 kB\nVmSize: 4096 kB\nVmSwap: 0 kB\n")
+        self.assertEqual(result["memory_rss_bytes"], 1048576)
+        self.assertEqual(result["memory_hwm_bytes"], 2097152)
+        self.assertEqual(result["memory_vms_bytes"], 4194304)
+        self.assertEqual(result["memory_swap_bytes"], 0)
+        self.assertEqual(result["memory_status"], "ok")
+
+    def test_bad_and_missing_fields_are_not_zero(self):
+        result = parse_memory_status("VmRSS: 10 kB\nVmHWM: -1 kB\nVmSize: bad kB\nVmSwap: 7 MB\n")
+        self.assertEqual(result["memory_status"], "partial")
+        for key in ("memory_hwm_bytes", "memory_vms_bytes", "memory_swap_bytes"):
+            self.assertIsNone(result[key])
+        self.assertEqual(parse_memory_status("State: Z\n")["memory_status"], "unavailable")
+
+    def test_missing_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = read_process_memory(123, Path(tmp))
+        self.assertEqual(result["memory_status"], "unavailable")
+        self.assertIsNone(result["memory_rss_bytes"])
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux memory monitoring")
+class MemoryIntegrationTests(unittest.TestCase):
+    setUp = CpuMonitorTests.setUp
+    run_child = CpuMonitorTests.run_child
+    rows = CpuMonitorTests.rows
+    def test_allocated_memory_and_final_null(self):
+        result = self.run_child("import time; x=bytearray(64*1024*1024); time.sleep(.4)")
+        rows = self.rows()
+        valid = [r for r in rows if r["memory_status"] == "ok"]
+        self.assertTrue(valid)
+        self.assertTrue(any(int(r["memory_rss_bytes"]) >= 64*1024*1024 for r in valid))
+        summary = result.monitor_summary["memory"]
+        rss = [int(r["memory_rss_bytes"]) for r in valid]
+        self.assertEqual(summary["rss_samples"], len(valid))
+        self.assertEqual(summary["max_observed_rss_bytes"], max(rss))
+        self.assertAlmostEqual(summary["mean_sample_rss_bytes"], sum(rss)/len(rss), delta=.001)
+        self.assertEqual(rows[-1]["memory_status"], "process_exited")
+        self.assertEqual(rows[-1]["memory_rss_bytes"], "")
+
+    def test_unreadable_memory_keeps_cpu_and_success(self):
+        with patch("cpu_monitor.read_process_memory", return_value=__import__('cpu_monitor').empty_memory("unavailable")):
+            result = self.run_child("import time; time.sleep(.25)")
+        self.assertEqual(result.returncode, 0)
+        self.assertGreater(result.monitor_summary["samples"], 0)
+        self.assertIsNone(result.monitor_summary["memory"]["mean_sample_rss_bytes"])
+        self.assertTrue(all(r["memory_rss_bytes"] == "" for r in self.rows()))
+
+    def test_timeout_preserves_memory(self):
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            self.run_child("import time; x=bytearray(16*1024*1024); time.sleep(5)", timeout=.35)
+        self.assertGreater(caught.exception.monitor_summary["memory"]["rss_samples"], 0)
+        self.assertIsNotNone(caught.exception.monitor_summary["memory"]["max_observed_rss_bytes"])
+
+
+if __name__ == "__main__":
+    unittest.main()

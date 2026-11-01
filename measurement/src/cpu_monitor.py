@@ -1,4 +1,4 @@
-"""Linux process CPU sampling without additional packages or privileges."""
+"""Linux process CPU, frequency and memory sampling without extra packages."""
 import csv
 import datetime
 import json
@@ -16,6 +16,8 @@ MONITOR_FIELDS = [
     "cpu_freq_avg_mhz", "cpu_freq_min_mhz", "cpu_freq_max_mhz",
     "cpu_freq_mhz_by_cpu", "cpu_freq_cpus_total", "cpu_freq_cpus_read",
     "cpu_freq_source", "cpu_freq_status",
+    "memory_rss_bytes", "memory_hwm_bytes", "memory_vms_bytes",
+    "memory_swap_bytes", "memory_source", "memory_status",
 ]
 
 FREQUENCY_SOURCE = "scaling_cur_freq"
@@ -50,6 +52,40 @@ def read_cpu_frequencies(pid, root=Path("/sys/devices/system/cpu")):
                       cpu_freq_min_mhz=min(available), cpu_freq_max_mhz=max(available),
                       cpu_freq_status="ok" if len(available) == len(cpus) else "partial")
     return fields
+
+
+MEMORY_KEYS = {"VmRSS": "memory_rss_bytes", "VmHWM": "memory_hwm_bytes",
+               "VmSize": "memory_vms_bytes", "VmSwap": "memory_swap_bytes"}
+MEMORY_SOURCE = "/proc/PID/status"
+
+
+def empty_memory(status):
+    return {**{field: None for field in MEMORY_KEYS.values()},
+            "memory_source": MEMORY_SOURCE, "memory_status": status}
+
+
+def parse_memory_status(text):
+    result = empty_memory("unavailable")
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep or key not in MEMORY_KEYS:
+            continue
+        parts = value.split()
+        try:
+            if len(parts) == 2 and parts[1] == "kB" and int(parts[0]) >= 0:
+                result[MEMORY_KEYS[key]] = int(parts[0]) * 1024
+        except ValueError:
+            pass
+    count = sum(result[key] is not None for key in MEMORY_KEYS.values())
+    result["memory_status"] = "ok" if count == len(MEMORY_KEYS) else "partial" if count else "unavailable"
+    return result
+
+
+def read_process_memory(pid, root=Path("/proc")):
+    try:
+        return parse_memory_status((Path(root) / str(pid) / "status").read_text())
+    except OSError:
+        return empty_memory("unavailable")
 
 
 def parse_cpu_ticks(stat):
@@ -90,6 +126,8 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
     frequency_mins = []
     frequency_maxs = []
     frequency_status_counts = {}
+    memory_values = {key: [] for key in MEMORY_KEYS.values()}
+    memory_status_counts = {}
 
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         with subprocess.Popen(cmd, stdout=stdout, stderr=stderr) as proc:
@@ -119,8 +157,14 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                         frequency_means.append(freq["cpu_freq_avg_mhz"])
                         frequency_mins.append(freq["cpu_freq_min_mhz"])
                         frequency_maxs.append(freq["cpu_freq_max_mhz"])
+                    memory = empty_memory("process_exited") if process_exited else read_process_memory(proc.pid)
+                    memory_status = memory["memory_status"]
+                    memory_status_counts[memory_status] = memory_status_counts.get(memory_status, 0) + 1
+                    for key, values in memory_values.items():
+                        if memory[key] is not None:
+                            values.append(memory[key])
                     writer.writerow({
-                        **context, **freq, "pid": proc.pid,
+                        **context, **freq, **memory, "pid": proc.pid,
                         "timestamp": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
                         "elapsed_s": f"{elapsed:.6f}", "interval_s": f"{window:.6f}",
                         "cpu_percent": f"{percent:.3f}",
@@ -187,6 +231,15 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
         "cpu_time_s": round(last_ticks / ticks_per_second, 6) if samples else None,
         "avg_cpu_percent": round(last_ticks / ticks_per_second / last_elapsed * 100, 3) if samples else None,
         "max_cpu_percent": round(max_percent, 3) if samples else None,
+        "memory": {
+            "source": MEMORY_SOURCE, "unit": "bytes",
+            "rss_samples": len(memory_values["memory_rss_bytes"]),
+            "status_counts": memory_status_counts,
+            "mean_sample_rss_bytes": round(sum(memory_values["memory_rss_bytes"]) / len(memory_values["memory_rss_bytes"]), 3) if memory_values["memory_rss_bytes"] else None,
+            "max_observed_rss_bytes": max(memory_values["memory_rss_bytes"], default=None),
+            "max_observed_hwm_bytes": max(memory_values["memory_hwm_bytes"], default=None),
+            "max_observed_swap_bytes": max(memory_values["memory_swap_bytes"], default=None),
+        },
         "frequency": {
             "source": FREQUENCY_SOURCE, "unit": "MHz",
             "samples": len(frequency_means), "status_counts": frequency_status_counts,
