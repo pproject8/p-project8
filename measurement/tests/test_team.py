@@ -39,7 +39,7 @@ class TeamQueueTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             return team.submit(args, self.settings, self.base)
 
-    def success(self, cmd, **kwargs):
+    def success(self, cmd, *args, **kwargs):
         prompt = cmd[cmd.index("-p") + 1]
         gen = cmd[cmd.index("-n") + 1]
         csv = "n_prompt,n_gen,test_time,cpu_info,build_commit,model_filename,n_threads,avg_ts,stddev_ts\n"
@@ -54,7 +54,7 @@ class TeamQueueTests(unittest.TestCase):
 
     def test_success_moves_to_done_and_saves_csv(self):
         ident = self.submit()
-        with patch("worker.subprocess.run", side_effect=self.success):
+        with patch("worker.run_monitored", side_effect=self.success):
             team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
         self.assertTrue((self.base / "done" / (ident + ".yaml")).is_file())
         meta = json.loads((self.base / "results" / ident / "meta.json").read_text())
@@ -65,15 +65,15 @@ class TeamQueueTests(unittest.TestCase):
     def test_partial_failure_is_visible(self):
         ident = self.submit()
         calls = iter([False, True])
-        def bench(cmd, **kwargs):
+        def bench(cmd, *args, **kwargs):
             return self.success(cmd, **kwargs) if next(calls) else subprocess.CompletedProcess(cmd, 1, "", "bad")
-        with patch("worker.subprocess.run", side_effect=bench):
+        with patch("worker.run_monitored", side_effect=bench):
             team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
         self.assertEqual(team.outcome(self.base, ident, "done"), "partial")
 
     def test_timeouts_move_request_to_failed(self):
         ident = self.submit()
-        with patch("worker.subprocess.run", side_effect=subprocess.TimeoutExpired("bench", 1)):
+        with patch("worker.run_monitored", side_effect=subprocess.TimeoutExpired("bench", 1)):
             team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
         self.assertTrue((self.base / "failed" / (ident + ".yaml")).is_file())
 
