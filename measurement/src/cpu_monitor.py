@@ -81,6 +81,11 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
     error = None
     started = time.monotonic()
     timed_out = False
+    loading = {"status": "marker_missing", "startup_to_warmup_s": None,
+               "lower_bound_s": None, "upper_bound_s": None}
+    stderr_offset = 0
+    stderr_tail = b""
+    last_progress_check = 0.0
     frequency_means = []
     frequency_mins = []
     frequency_maxs = []
@@ -126,8 +131,25 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                     max_percent = max(max_percent, percent)
                     last_ticks, last_elapsed = ticks, elapsed
 
+                def check_progress():
+                    # pread leaves the output file position unchanged for the child.
+                    # The time is an observation upper bound, not an exact event timestamp.
+                    nonlocal stderr_offset, stderr_tail, last_progress_check
+                    before_read = time.monotonic() - started
+                    data = os.pread(stderr.fileno(), max(0, os.fstat(stderr.fileno()).st_size - stderr_offset), stderr_offset)
+                    stderr_offset += len(data)
+                    observed = time.monotonic() - started
+                    combined = stderr_tail + data
+                    if loading["status"] == "marker_missing" and b": warmup " in combined and b"llama-bench: benchmark " in combined:
+                        loading.update(status="ok", startup_to_warmup_s=round(observed, 6),
+                                       lower_bound_s=round(last_progress_check, 6),
+                                       upper_bound_s=round(observed, 6))
+                    stderr_tail = combined[-256:]
+                    last_progress_check = before_read
+
                 try:
                     while True:
+                        check_progress()
                         exited = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                         elapsed = time.monotonic() - started
                         if exited is not None:
@@ -158,7 +180,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
         stderr_text = stderr.read().decode("utf-8", errors="replace")
 
     summary = {
-        **context, "pid": proc.pid,
+        **context, "pid": proc.pid, "loading": loading,
         "status": "partial" if error and samples else "unavailable" if error else "ok",
         "samples": samples,
         "elapsed_s": round(last_elapsed, 6) if samples else None,

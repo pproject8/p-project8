@@ -14,6 +14,9 @@ from pathlib import Path
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
 
+LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
+                  "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
+
 FIELDS = ["request_id", "time", "cpu", "build", "model", "threads",
           "repeat", "test", "avg_ts", "stddev_ts", "order"]
 
@@ -137,6 +140,16 @@ def run_request(request_path, settings, req_id=None):
     with monitor_csv.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=MONITOR_FIELDS).writeheader()
 
+    loading_csv = out_dir / "loading.csv"
+    with loading_csv.open("w", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=LOADING_FIELDS).writeheader()
+
+    def save_loading(context, summary):
+        loading = summary.get("loading", {"status": "unavailable"})
+        with loading_csv.open("a", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=LOADING_FIELDS).writerow({**context, **loading})
+        return loading
+
     meta = {
         "request_id": req_id,
         "started": started.isoformat(timespec="seconds"),
@@ -153,6 +166,14 @@ def run_request(request_path, settings, req_id=None):
         "seed": None,
         "ok": 0,
         "failed": 0,
+        "loading_measurement": {
+            "metric": "startup_to_warmup_s",
+            "scope": "monotonic wall time before process launch to first observed llama-bench warmup progress marker; includes startup, backend, model, context and threadpool initialization",
+            "precision": "upper bound at polling observation; lower_bound_s is previous observation start; no marker means null",
+            "cache": "uncontrolled OS page cache; model hash is read before benchmark, so this is not a cold-load measurement",
+            "repetitions": "once per condition process, not once per internal benchmark repetition",
+            "conditions": [],
+        },
         "cpu_monitor": {
             "backend": "linux_proc_stat" if sys.platform.startswith("linux") else "unsupported",
             "interval_seconds": 1.0,
@@ -181,7 +202,7 @@ def run_request(request_path, settings, req_id=None):
     with open(out_dir / "run.log", "w", encoding="utf-8") as log:
         for i, (p, n, t) in enumerate(combos, 1):
             cmd = [str(bench), "-m", str(model), "-p", str(p), "-n", str(n),
-                   "-t", str(t), "-r", str(req["repeat"]), "-o", "csv"]
+                   "-t", str(t), "-r", str(req["repeat"]), "-o", "csv", "--progress"]
             log.write(f"[{i}/{len(combos)}] {' '.join(cmd)}\n")
             context = {"request_id": req_id, "order": i,
                        "test": f"pp{p}" if n == 0 else f"tg{n}",
@@ -192,6 +213,10 @@ def run_request(request_path, settings, req_id=None):
             except subprocess.TimeoutExpired as exc:
                 meta["cpu_monitor"]["conditions"].append(
                     getattr(exc, "monitor_summary", {**context, "status": "unavailable", "samples": 0}))
+                loading = save_loading(context, getattr(exc, "monitor_summary", {}))
+                meta["loading_measurement"]["conditions"].append({**context, **loading})
+                if exc.stderr:
+                    log.write(exc.stderr)
                 meta["failed"] += 1
                 log.write("  실패: 조건 실행 시간 초과\n")
                 log.flush()
@@ -199,6 +224,12 @@ def run_request(request_path, settings, req_id=None):
                 continue
             summary = getattr(result, "monitor_summary", {**context, "status": "unavailable", "samples": 0})
             meta["cpu_monitor"]["conditions"].append(summary)
+            loading = save_loading(context, summary)
+            meta["loading_measurement"]["conditions"].append({**context, **loading})
+            if result.stderr:
+                log.write(result.stderr + "\n")
+            if loading.get("startup_to_warmup_s") is not None:
+                print(f"[{i}/{len(combos)}] 준비 시간 {loading['startup_to_warmup_s']:.3f}초 (워밍업 직전까지)")
             if summary["status"] != "ok":
                 log.write(f"  CPU 기록 상태: {summary['status']} {summary.get('error', '')}\n")
             if result.returncode != 0:
