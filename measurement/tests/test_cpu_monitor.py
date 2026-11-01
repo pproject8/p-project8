@@ -127,3 +127,32 @@ class CpuMonitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux process monitoring")
+class LoadingBoundaryTests(unittest.TestCase):
+    def test_marker_bounds_exclude_later_computation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "monitor.csv"
+            code = "import sys,time; time.sleep(.15); print('llama-bench: benchmark 1/1: warmup prompt run',file=sys.stderr,flush=True); time.sleep(.3)"
+            result = run_monitored([sys.executable, "-c", code], output, {}, 5)
+            loading = result.monitor_summary["loading"]
+            self.assertEqual(loading["status"], "ok")
+            self.assertGreaterEqual(loading["upper_bound_s"], .15)
+            self.assertLess(loading["lower_bound_s"], loading["upper_bound_s"])
+            self.assertLess(loading["upper_bound_s"], result.monitor_summary["elapsed_s"])
+            self.assertIn("warmup prompt run", result.stderr)
+
+    def test_missing_marker_is_null_even_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_monitored([sys.executable, "-c", "raise SystemExit(2)"], Path(tmp)/"monitor.csv", {}, 5)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.monitor_summary["loading"]["status"], "marker_missing")
+            self.assertIsNone(result.monitor_summary["loading"]["startup_to_warmup_s"])
+
+    def test_timeout_preserves_observed_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = "import sys,time; print('llama-bench: benchmark 1/1: warmup generation run',file=sys.stderr,flush=True); time.sleep(5)"
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                run_monitored([sys.executable, "-c", code], Path(tmp)/"monitor.csv", {}, .25)
+            self.assertEqual(caught.exception.monitor_summary["loading"]["status"], "ok")
