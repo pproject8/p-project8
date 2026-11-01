@@ -168,3 +168,22 @@ systemctl status pp8-worker --no-pager
 이 값은 폴링 관찰 시점의 상한이며 `lower_bound_s`와 `upper_bound_s`로 관찰 범위를 함께 저장합니다. 약 50 ms 간격으로 확인하되 실제 간격은 시스템 부하에 따라 길어질 수 있습니다. 메시지가 없으면 `marker_missing`, 지원하지 않는 플랫폼은 `unavailable`로 표시하고 시간은 빈 값으로 둡니다. 실패/시간 초과에서도 이미 관찰한 값은 보존하며 성공 여부는 meta.json의 ok/failed와 run.log를 함께 확인합니다.
 
 각 pp/tg 조건은 별도 프로세스이므로 준비 시간이 하나씩 기록됩니다. `repeat: 10`은 계산 반복 수이며 로딩 시간 표본 10개를 뜻하지 않습니다. OS 파일 캐시는 통제하지 않고, 실행 전에 모델 해시도 읽으므로 cold load 측정으로 해석하지 않습니다. 캐시를 비우거나 모델 로딩 방식, 기존 TPS/CPU 기록 형식을 변경하지 않습니다. 원본 진행 메시지는 run.log에 저장되고 요약은 meta.json의 loading_measurement에 저장됩니다. llama-bench는 `--progress` 옵션이 필요합니다.
+
+
+### 메모리 사용량 기록
+
+기존 실행 명령으로 `monitor.csv` 뒤에 다음 열도 저장합니다. 별도 패키지나 sudo 없이 Linux `/proc/PID/status`를 약 1초마다 읽습니다.
+
+| 열 | 의미 |
+| --- | --- |
+| memory_rss_bytes | VmRSS: 현재 RAM에 상주하는 프로세스 메모리 |
+| memory_hwm_bytes | VmHWM: 해당 시점까지 커널이 보고하는 RSS 최고값 |
+| memory_vms_bytes | VmSize: 가상 주소 공간 크기이며 실제 RAM 사용량이 아님 |
+| memory_swap_bytes | VmSwap: 비공유 익명 메모리의 스왑 사용량이며 shmem 스왑은 제외 |
+| memory_source / memory_status | 출처 및 ok / partial / unavailable / process_exited 상태 |
+
+단위는 bytes이며 proc의 kB에 1024를 곱합니다. MiB로 읽으려면 1,048,576으로 나눕니다. 누락/권한 오류/프로세스 종료는 빈 값으로 저장하고 실제 스왑 0과 구분합니다. Windows에서는 기존과 같이 모니터링이 지원되지 않으며 CSV는 헤더만 저장합니다.
+
+RSS는 공유 라이브러리 및 mmap 파일의 상주 페이지를 포함합니다. 모델 파일 크기, 노트북 전체 사용량, cgroup의 memory.current와 다른 지표이며 자식 프로세스는 합산하지 않습니다. RSS 계수는 커널의 근사값이고 짧은 순간의 피크를 놓칠 수 있습니다.
+
+`meta.json`의 `cpu_monitor.conditions[].memory`에 유효 RSS 표본의 단순 평균(mean_sample_rss_bytes), 관측 RSS 최대(max_observed_rss_bytes), 관측된 VmHWM의 최대(max_observed_hwm_bytes), 관측 스왑 최대 및 표본 수/상태 개수를 저장합니다. 평균은 시간 가중 평균이 아니며 두 최대값 모두 프로세스 전체 수명의 정확한 최대 사용량을 보장하지 않습니다. CPU/클럭/준비 시간 및 TPS 기록은 유지하며 메모리 제한이나 스왑 설정은 변경하지 않습니다.

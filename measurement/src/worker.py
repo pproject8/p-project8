@@ -180,6 +180,14 @@ def run_request(request_path, settings, req_id=None):
             "percent_basis": "100% = one logical CPU fully utilized; may exceed 100%",
             "scope": "llama-bench process including loading, warmup and all internal repetitions; excludes child processes",
             "conditions": [],
+            "memory": {
+                "source": "/proc/PID/status", "unit": "bytes (proc kB multiplied by 1024)",
+                "scope": "llama-bench process including resident shared/file-backed pages; excludes child processes and whole-system/cgroup totals",
+                "fields": "VmRSS resident memory; VmHWM kernel-reported RSS high-water mark; VmSize virtual address space, not physical RAM; VmSwap private anonymous swap, excludes shmem swap",
+                "accuracy": "kernel-reported approximate RSS accounting, sampled about once per second; brief peaks may be missed",
+                "summary": "unweighted mean of valid RSS snapshots; observed RSS maximum and highest observed VmHWM are distinct; neither guarantees lifetime peak",
+                "final_sample": "memory omitted after process exit to avoid treating released memory as zero usage",
+            },
             "frequency": {
                 "source": "/sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq",
                 "unit": "MHz (sysfs kHz divided by 1000)",
