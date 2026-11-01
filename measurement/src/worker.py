@@ -159,6 +159,14 @@ def run_request(request_path, settings, req_id=None):
             "percent_basis": "100% = one logical CPU fully utilized; may exceed 100%",
             "scope": "llama-bench process including loading, warmup and all internal repetitions; excludes child processes",
             "conditions": [],
+            "frequency": {
+                "source": "/sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq",
+                "unit": "MHz (sysfs kHz divided by 1000)",
+                "scope": "logical CPUs in sampled main-thread affinity, including idle CPUs; not utilization weighted",
+                "interpretation": "driver-reported snapshots, not exact hardware clock or per-process effective frequency",
+                "summary": "unweighted mean of valid sample CPU means; min/max across available CPU snapshots",
+                "final_sample": "frequency omitted after process exit to avoid reporting post-exit idle clocks",
+            },
         },
     }
     write_json(out_dir / "meta.json", meta)

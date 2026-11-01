@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -8,13 +9,58 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from cpu_monitor import MONITOR_FIELDS, parse_cpu_ticks, run_monitored
+from cpu_monitor import MONITOR_FIELDS, parse_cpu_ticks, read_cpu_frequencies, run_monitored
 
 
 class StatParsingTests(unittest.TestCase):
     def test_command_name_with_spaces_and_parentheses(self):
         fields = ["S"] + ["0"] * 10 + ["123", "45"]
         self.assertEqual(parse_cpu_ticks("123 (worker name (x)) " + " ".join(fields)), 168)
+
+
+class FrequencyReadingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def set_frequency(self, cpu, value):
+        p = self.root / f"cpu{cpu}" / "cpufreq" / "scaling_cur_freq"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(value)
+
+    def test_affinity_scope_and_khz_to_mhz(self):
+        self.set_frequency(0, "3200000")
+        self.set_frequency(3, "1800000")
+        self.set_frequency(8, "9999999")  # Not permitted by the sampled affinity.
+        with patch("cpu_monitor.os.sched_getaffinity", return_value={0, 3}, create=True):
+            result = read_cpu_frequencies(123, self.root)
+        self.assertEqual(result["cpu_freq_avg_mhz"], 2500.0)
+        self.assertEqual(result["cpu_freq_status"], "ok")
+        self.assertEqual(json.loads(result["cpu_freq_mhz_by_cpu"]), {"0": 3200.0, "3": 1800.0})
+
+    def test_missing_cpu_is_null_not_zero(self):
+        self.set_frequency(0, "2000000")
+        with patch("cpu_monitor.os.sched_getaffinity", return_value={0, 2}, create=True):
+            result = read_cpu_frequencies(123, self.root)
+        self.assertEqual(result["cpu_freq_avg_mhz"], 2000.0)
+        self.assertEqual(result["cpu_freq_status"], "partial")
+        self.assertEqual(result["cpu_freq_cpus_read"], 1)
+        self.assertIsNone(json.loads(result["cpu_freq_mhz_by_cpu"])["2"])
+
+    def test_invalid_frequency_does_not_create_false_values(self):
+        for cpu, value in enumerate(("nan", "0", "-100", "invalid")):
+            self.set_frequency(cpu, value)
+        with patch("cpu_monitor.os.sched_getaffinity", return_value=set(range(4)), create=True):
+            result = read_cpu_frequencies(123, self.root)
+        self.assertEqual(result["cpu_freq_status"], "unavailable")
+        self.assertIsNone(result["cpu_freq_avg_mhz"])
+
+    def test_affinity_permission_failure(self):
+        with patch("cpu_monitor.os.sched_getaffinity", side_effect=PermissionError(), create=True):
+            result = read_cpu_frequencies(123, self.root)
+        self.assertEqual(result["cpu_freq_status"], "unavailable")
+        self.assertEqual(result["cpu_freq_cpus_read"], 0)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Requires Linux /proc and waitid")
@@ -54,6 +100,8 @@ class CpuMonitorTests(unittest.TestCase):
         result = self.run_child("print('fast')")
         self.assertEqual(result.stdout.strip(), "fast")
         self.assertGreaterEqual(len(self.rows()), 1)
+        self.assertEqual(self.rows()[-1]["cpu_freq_status"], "process_exited")
+        self.assertEqual(self.rows()[-1]["cpu_freq_avg_mhz"], "")
 
     def test_nonzero_exit_keeps_cpu_samples(self):
         result = self.run_child("import sys; sys.exit(7)")
