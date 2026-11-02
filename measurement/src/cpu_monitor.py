@@ -10,6 +10,8 @@ import sys
 import tempfile
 import time
 
+from io_monitor import COUNTER_FIELDS, CounterMonitor, read_io, parse_faults
+
 MONITOR_FIELDS = [
     "request_id", "order", "test", "threads", "repeat", "pid", "timestamp",
     "elapsed_s", "interval_s", "cpu_percent", "cpu_time_s",
@@ -18,7 +20,7 @@ MONITOR_FIELDS = [
     "cpu_freq_source", "cpu_freq_status",
     "memory_rss_bytes", "memory_hwm_bytes", "memory_vms_bytes",
     "memory_swap_bytes", "memory_source", "memory_status",
-]
+] + COUNTER_FIELDS
 
 FREQUENCY_SOURCE = "scaling_cur_freq"
 
@@ -128,6 +130,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
     frequency_status_counts = {}
     memory_values = {key: [] for key in MEMORY_KEYS.values()}
     memory_status_counts = {}
+    counters = CounterMonitor()
 
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         with subprocess.Popen(cmd, stdout=stdout, stderr=stderr) as proc:
@@ -139,7 +142,8 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                 def sample(process_exited=False):
                     nonlocal samples, last_ticks, last_elapsed, max_percent, error
                     try:
-                        ticks = parse_cpu_ticks(Path(f"/proc/{proc.pid}/stat").read_text())
+                        stat_text = Path(f"/proc/{proc.pid}/stat").read_text()
+                        ticks = parse_cpu_ticks(stat_text)
                     except (OSError, ValueError, IndexError) as exc:
                         error = f"{type(exc).__name__}: {exc}"
                         return
@@ -147,6 +151,8 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                     window = elapsed - last_elapsed
                     if window <= 0 or ticks < last_ticks:
                         return
+                    counter_values = {**parse_faults(stat_text), **read_io(proc.pid)}
+                    counter_row = counters.sample(counter_values, time.monotonic() - started, final=process_exited)
                     percent = (ticks - last_ticks) / ticks_per_second / window * 100
                     # Once the process exits, CPU time for its final interval is still
                     # valid, but a new clock snapshot could describe an idle CPU instead.
@@ -164,7 +170,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
                         if memory[key] is not None:
                             values.append(memory[key])
                     writer.writerow({
-                        **context, **freq, **memory, "pid": proc.pid,
+                        **context, **freq, **memory, **counter_row, "pid": proc.pid,
                         "timestamp": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
                         "elapsed_s": f"{elapsed:.6f}", "interval_s": f"{window:.6f}",
                         "cpu_percent": f"{percent:.3f}",
@@ -231,6 +237,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
         "cpu_time_s": round(last_ticks / ticks_per_second, 6) if samples else None,
         "avg_cpu_percent": round(last_ticks / ticks_per_second / last_elapsed * 100, 3) if samples else None,
         "max_cpu_percent": round(max_percent, 3) if samples else None,
+        "io_and_faults": counters.summary(),
         "memory": {
             "source": MEMORY_SOURCE, "unit": "bytes",
             "rss_samples": len(memory_values["memory_rss_bytes"]),
