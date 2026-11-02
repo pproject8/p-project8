@@ -30,7 +30,7 @@
 
 - 할 일은 모두 **이슈**로 만든다. 템플릿은 기능 / 버그 / 실험 세 가지다. 템플릿으로 만든 이슈는 Projects 보드에 자동으로 올라간다.
 - 보드의 Status 는 Backlog → Todo → In Progress → In Review → Done (안 하기로 하면 Canceled) 순서로 옮기고, Priority(Urgent·High·Medium·Low)와 Estimate(포인트)를 채운다.
-- 이슈에는 `type:` 라벨 하나와 `area:` 라벨을 붙이고, 해당하는 **마일스톤**(사전발표 · 산학 멘토링 1 · 산학 멘토링 2 · 최종발표)을 지정한다.
+- 이슈에는 `type:` 라벨 하나를 붙이고, 해당하는 **마일스톤**(사전발표 · 산학 멘토링 1 · 산학 멘토링 2 · 최종발표)을 지정한다.
 - 큰 작업은 `type: epic` 이슈를 만들고 하위 이슈(Sub-issues)로 쪼갠다.
 - 브랜치는 `{type}/{이슈번호}-{요약}` 형식으로 만든다. 예) `feat/12-login-form`
 - PR 본문에 `Closes #이슈번호` 를 적어 merge 시 이슈가 닫히게 한다.
@@ -41,7 +41,6 @@
 | 라벨 | 의미 |
 | --- | --- |
 | `type: feature` / `bug` / `experiment` / `docs` / `refactor` / `chore` / `epic` | 이슈 종류 |
-| `area: model` / `data` / `backend` / `frontend` / `infra` | 작업 영역 |
 | `status: blocked` / `needs-discussion` | 막힘, 논의 필요 |
 
 ### 커밋
