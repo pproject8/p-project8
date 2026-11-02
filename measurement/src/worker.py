@@ -180,6 +180,16 @@ def run_request(request_path, settings, req_id=None):
             "percent_basis": "100% = one logical CPU fully utilized; may exceed 100%",
             "scope": "llama-bench process including loading, warmup and all internal repetitions; excludes child processes",
             "conditions": [],
+            "io_and_faults": {
+                "sources": "/proc/PID/io read_bytes,rchar and /proc/PID/stat minflt,majflt",
+                "scope": "llama-bench process lifetime including loading and warmup; stat child fault fields are excluded; no manual process-tree aggregation",
+                "read_bytes": "storage-layer bytes attributed to process, not RAM bandwidth or model-only bytes; cached reads may be zero",
+                "rchar": "bytes returned through read-like syscalls including cache hits; not total mmap access bytes; do not subtract read_bytes to estimate cache hits",
+                "faults": "minor faults do not require page loading from disk; major faults require page loading; counts are not disk requests or page-count times page-size bytes",
+                "deltas": "first baseline zero before launch; each counter uses time since its own last valid observation, including gaps; interval and per-second rate stored separately",
+                "final_sample": "counters read before reaping exited child; final_observed=false means last observed cumulative value, not confirmed lifetime total",
+                "cache": "page cache unchanged; worker reads model hash before launching bench and may warm cache",
+            },
             "memory": {
                 "source": "/proc/PID/status", "unit": "bytes (proc kB multiplied by 1024)",
                 "scope": "llama-bench process including resident shared/file-backed pages; excludes child processes and whole-system/cgroup totals",

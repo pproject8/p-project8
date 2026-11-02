@@ -187,3 +187,25 @@ systemctl status pp8-worker --no-pager
 RSS는 공유 라이브러리 및 mmap 파일의 상주 페이지를 포함합니다. 모델 파일 크기, 노트북 전체 사용량, cgroup의 memory.current와 다른 지표이며 자식 프로세스는 합산하지 않습니다. RSS 계수는 커널의 근사값이고 짧은 순간의 피크를 놓칠 수 있습니다.
 
 `meta.json`의 `cpu_monitor.conditions[].memory`에 유효 RSS 표본의 단순 평균(mean_sample_rss_bytes), 관측 RSS 최대(max_observed_rss_bytes), 관측된 VmHWM의 최대(max_observed_hwm_bytes), 관측 스왑 최대 및 표본 수/상태 개수를 저장합니다. 평균은 시간 가중 평균이 아니며 두 최대값 모두 프로세스 전체 수명의 정확한 최대 사용량을 보장하지 않습니다. CPU/클럭/준비 시간 및 TPS 기록은 유지하며 메모리 제한이나 스왑 설정은 변경하지 않습니다.
+
+
+### 디스크 읽기와 페이지 폴트 기록
+
+기존 실행 명령을 유지하며 `monitor.csv`에 다음 네 누적 카운터를 추가합니다. 별도 패키지·sudo 없이 기존 CPU/메모리 관측과 함께 약 1초마다 읽습니다.
+
+| 열 | 의미 |
+| --- | --- |
+| io_read_bytes | /proc/PID/io read_bytes: 해당 프로세스에 계상된 저장장치 계층 읽기 바이트 |
+| io_rchar_bytes | /proc/PID/io rchar: read 계열 호출에서 읽은 바이트, 파일 캐시 적중도 포함 |
+| minor_faults | /proc/PID/stat minflt: 디스크에서 페이지를 가져올 필요 없이 처리한 페이지 폴트 누적 횟수 |
+| major_faults | /proc/PID/stat majflt: 디스크에서 페이지를 가져와야 했던 페이지 폴트 누적 횟수 |
+
+각 열에 `_delta`(이전 유효 관측 이후 증가량), `_interval_s`(그 관측 간 실제 시간), `_per_s`(증가량/초), `_status`도 저장합니다. 읽기량은 bytes와 bytes/s, 폴트는 횟수와 횟수/s입니다. 첫 증가량은 프로세스 실행 전 0을 기준으로 계산합니다. 누락이 끼면 해당 카운터의 마지막 유효 관측부터 시간을 계산하며 누락을 0으로 대체하지 않습니다. 감소한 카운터는 counter_decreased로 표시합니다.
+
+`meta.json`의 `cpu_monitor.conditions[].io_and_faults`에 카운터별 마지막 누적값, 관측 시각, 평균 및 관측 최대 속도, 상태 개수와 `final_observed`를 저장합니다. 종료 전 최종 카운터 읽기를 시도하되 이 장비에서는 종료 후 `/proc/PID/io`를 읽지 못할 수 있습니다. `final_observed: false`이면 전체 실행의 확정 총량이 아닌 마지막 관측 누적값입니다. 짧게 끝난 실행은 I/O 표본이 없을 수 있습니다. 정상/실패/시간 초과에서도 가능한 값은 보존합니다.
+
+관측 대상은 로딩·워밍업·계산을 포함한 llama-bench 프로세스이며 모델 파일만의 I/O나 SSD 전체 사용량이 아닙니다. stat의 자식 폴트 필드는 제외하며 프로세스 트리를 별도 합산하지 않습니다. OS I/O 계상 규칙은 적용됩니다.
+
+캐시가 데워져 있으면 `io_read_bytes`가 0이어도 정상입니다. 워커가 모델 해시를 먼저 읽어 캐시를 데울 수 있으며 이 읽기는 워커에 속하므로 llama-bench 카운터에는 포함하지 않습니다. rchar는 mmap 접근량 전체를 나타내지 않으므로 `rchar - read_bytes`를 캐시 적중량으로 계산하면 안 됩니다. major fault 횟수는 디스크 요청 수나 `횟수 × 페이지 크기`의 읽기량과 일치하지 않습니다. 캐시 비우기, 스왑 및 자원 제한 설정은 변경하지 않습니다.
+
+정의 참고: https://docs.kernel.org/filesystems/proc.html
