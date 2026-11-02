@@ -209,3 +209,25 @@ RSS는 공유 라이브러리 및 mmap 파일의 상주 페이지를 포함합�
 캐시가 데워져 있으면 `io_read_bytes`가 0이어도 정상입니다. 워커가 모델 해시를 먼저 읽어 캐시를 데울 수 있으며 이 읽기는 워커에 속하므로 llama-bench 카운터에는 포함하지 않습니다. rchar는 mmap 접근량 전체를 나타내지 않으므로 `rchar - read_bytes`를 캐시 적중량으로 계산하면 안 됩니다. major fault 횟수는 디스크 요청 수나 `횟수 × 페이지 크기`의 읽기량과 일치하지 않습니다. 캐시 비우기, 스왑 및 자원 제한 설정은 변경하지 않습니다.
 
 정의 참고: https://docs.kernel.org/filesystems/proc.html
+
+
+## 한 줄로 결과 요약 보기
+
+SSH 접속 후 개인 클론의 measurement 폴더에서 실행합니다.
+
+```bash
+cd ~/p-project8/measurement
+./summary
+```
+
+개인 settings.yaml의 work_dir에서 최근 결과(기본 워커가 생성한 시간순 요청 ID)를 찾아 TPS, 준비 시간, CPU 평균/관측 최대, 평균 보고 클럭, RSS 평균/관측 최대, 스왑, 디스크/read 계열 읽기량, minor/major 페이지 폴트를 출력합니다. 결과를 읽기만 하며 측정을 새로 실행하지 않습니다.
+
+특정 결과는 요청 ID를 붙입니다.
+
+```bash
+./summary 20261102-005918-exp0-baseline
+```
+
+기존 클론은 먼저 `git pull --ff-only`로 업데이트합니다. 실행 파일 권한은 Git에 포함되어 있어 별도 설치·sudo·alias가 필요 없습니다. `.venv/bin/python`이 있으면 사용하고, 없으면 python3를 사용합니다(기존 PyYAML 필요). 다른 위치의 설정은 `./summary --settings /절대경로/settings.yaml`로 선택합니다. 개인 실행에서는 기존 공용 `/usr/local/bin/pp8 result`와 구분해서 사용합니다.
+
+최근 결과가 미완료면 이전 결과로 자동 넘어가지 않고 안내합니다. 예전 결과에서 기록하지 않은 값은 미기록으로 표시합니다. 실패 조건과 마지막 I/O 관측 여부도 함께 표시합니다.

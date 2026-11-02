@@ -12,7 +12,9 @@
 
 기존 공용 큐·상시 워커의 운영 및 배포 안내는 [measurement/README.md](measurement/README.md)에 있습니다.
 
-현재는 Prefill·Decode 처리량과 Linux CPU 사용률·드라이버 보고 클럭 기록(`monitor.csv`)을 지원합니다. 메모리·디스크·온도 모니터링, 자원 제한, 로딩 시간·TTFT 측정은 후속 구현 대상입니다.
+현재는 Prefill·Decode 처리량, 준비 시간, Linux CPU 사용률·보고 클럭·메모리·디스크 읽기량·페이지 폴트 기록을 지원합니다. 온도, 자원 제한, 순수 모델 로딩 시간과 TTFT는 후속 구현 대상입니다.
+
+측정 후 `measurement` 폴더에서 **`./summary`**를 실행하면 최근 개인 결과를 한 번에 요약합니다. 특정 결과는 `./summary 요청ID`로 선택합니다. 자세한 사용법은 [개인 실행 안내](measurement/docs/personal-run.md#한-줄로-결과-요약-보기)를 참고하세요.
 
 ## 링크
 
