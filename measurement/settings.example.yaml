@@ -3,3 +3,8 @@ models_dir: /srv/pp8/models
 work_dir: /srv/pp8/work
 default_model: Llama-3.2-3B-Instruct-Q4_K_M.gguf
 condition_timeout_seconds: 3600
+
+# 생략하면 bench_path 옆의 llama-server를 사용합니다 (동일 빌드 권장).
+server_path: /srv/pp8/llama/llama-b11706/llama-server
+ttft_startup_timeout_seconds: 300
+ttft_request_timeout_seconds: 300

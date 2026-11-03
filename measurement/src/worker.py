@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
+from ttft import run_ttft, validate_options
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -120,6 +121,7 @@ def write_json(path, data):
 def run_request(request_path, settings, req_id=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
+    validate_options(req, settings)
 
     bench = Path(settings["bench_path"])
     model = Path(settings["models_dir"]) / req["model"]
@@ -268,6 +270,10 @@ def run_request(request_path, settings, req_id=None):
                 print(f"[{i}/{len(combos)}] {row['test']} 스레드 {row['threads']} "
                       f"{float(row['avg_ts']):.1f} ± {float(row['stddev_ts']):.1f}")
 
+    # Separate inference engine run after all TPS measurements; never overlap them.
+    if req.get("ttft", True):
+        print("준비된 모델의 TTFT 측정 중 (TPS와 별도, 조건별 워밍업 1회 제외)", flush=True)
+    meta["ttft_measurement"] = run_ttft(req, settings, model, out_dir, req_id)
     meta["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
     write_json(out_dir / "meta.json", meta)
     print("결과 폴더:", out_dir)
