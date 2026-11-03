@@ -14,6 +14,9 @@
 
 현재는 Prefill·Decode 처리량, 준비 시간, Linux CPU 사용률·보고 클럭·메모리·디스크 읽기량·페이지 폴트 기록을 지원합니다. 온도, 자원 제한, 순수 모델 로딩 시간과 TTFT는 후속 구현 대상입니다.
 
+메모리 한도·OOM 기록은 [#43 구현 초안](measurement/docs/memory-limit.md)으로 추가했습니다.
+실제 노트북 검증은 아직이며, 제한 없는 요청의 기존 명령·TPS 결과 형식은 유지합니다.
+
 측정 후 `measurement` 폴더에서 **`./summary`**를 실행하면 최근 개인 결과를 한 번에 요약합니다. 특정 결과는 `./summary 요청ID`로 선택합니다. 자세한 사용법은 [개인 실행 안내](measurement/docs/personal-run.md#한-줄로-결과-요약-보기)를 참고하세요.
 
 ## 링크

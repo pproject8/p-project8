@@ -35,6 +35,9 @@ pp8 result 여기에_전체_요청ID
 
 ## 파일 구성
 
+메모리 한도 요청과 OOM 분류의 구현 초안은 [메모리 제한 설명](docs/memory-limit.md)을 확인하세요.
+실제 장비 검증 전이며 한도 없는 요청은 기존 형식을 유지합니다.
+
 ```text
 measurement/
   src/team.py             제출·조회·단일 큐 워커
