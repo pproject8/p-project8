@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import subprocess
 
 
 def own_cgroup():
@@ -18,7 +19,14 @@ def enter(group, limit, command):
     if Path('/sys/fs/cgroup') not in group.parents:
         raise ValueError('Invalid cgroup path')
     # Do not execute the benchmark until the actual kernel controls are verified.
-    (group/'cgroup.procs').write_text(str(os.getpid()))
+    # Let the user manager move the process; scope control files are not
+    # necessarily writable by the login session itself.
+    moved = subprocess.run(['busctl', '--user', 'call', 'org.freedesktop.systemd1',
+                            '/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager',
+                            'AttachProcessesToUnit', 'ssau', group.name, '', '1', str(os.getpid())],
+                           capture_output=True, text=True, timeout=10)
+    if moved.returncode:
+        raise RuntimeError('systemd process attachment failed: ' + moved.stderr.strip())
     if own_cgroup() != group:
         raise RuntimeError('benchmark did not enter the requested cgroup')
     if int((group/'memory.max').read_text()) != limit:

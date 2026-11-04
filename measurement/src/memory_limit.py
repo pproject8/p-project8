@@ -78,7 +78,7 @@ def memory_scope(limit, log):
         ready, stop = root/'ready.json', root/'stop'
         unit = 'pp8-memory-' + uuid.uuid4().hex + '.scope'
         command = ['systemd-run', '--user', '--scope', '--quiet', '--unit', unit,
-                   '-p', f'MemoryMax={limit}', '-p', 'MemorySwapMax=0',
+                   '-p', f'MemoryMax={limit}', '-p', 'MemorySwapMax=0', '-p', 'Delegate=yes',
                    sys.executable, str(GATE), 'hold', str(ready), str(stop)]
         log.write(json.dumps(command) + '\n'); log.flush()
         proc = subprocess.Popen(command, stdout=log, stderr=log)

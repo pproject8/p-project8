@@ -1,9 +1,9 @@
 # 메모리 한도와 OOM 기록 (구현 초안)
 
 관련 작업: [#43](https://github.com/pproject8/p-project8/issues/43).
-현재는 **코드와 모의 단위 테스트만 검증**했습니다. 사용자 요청에 따라 실제 노트북의
-systemd/cgroup 권한 검증과 모델 실행·OOM 실험은 하지 않았습니다.
-실험용으로 사용하기 전에 아래 실제 검증이 필요합니다.
+실제 노트북에서 systemd/cgroup 한도와 스왑 제한을 확인했고, 3B 모델의 none 읽기 방식에서
+0.8배 한도의 OOM과 이어지는 2배 조건의 정상 실행을 확인했습니다.
+요청 YAML의 load_mode 연결과 외부 exp 검증기 수정은 아래 설명처럼 남아 있습니다.
 
 ## 요청과 호환
 
@@ -27,9 +27,10 @@ condition_timeout_seconds: 1800
 
 ## 실행 구조
 
-1. 조건마다 무작위 이름의 사용자 systemd scope를 MemoryMax와 MemorySwapMax=0으로 준비합니다.
+1. 조건마다 무작위 이름의 사용자 systemd scope를 MemoryMax, MemorySwapMax=0, Delegate=yes로 준비합니다.
 2. 작은 Python scope holder를 유지하여 벤치마크 종료 후에도 memory.events를 읽을 수 있게 합니다.
-3. 워커의 직접 자식인 exec gate가 해당 cgroup으로 들어가 실제 memory.max, memory.swap.max와 소속을 확인한 뒤 llama-bench로 exec합니다.
+3. 워커의 직접 자식인 exec gate가 사용자 systemd의 AttachProcessesToUnit API로 해당 cgroup에 들어가
+   실제 memory.max, memory.swap.max와 소속을 확인한 뒤 llama-bench로 exec합니다.
 4. 기존 monitor는 같은 PID를 관찰합니다. systemd-run 자체를 벤치마크로 잘못 관찰하지 않습니다.
 5. 종료 후 cgroup OOM 카운터를 읽고 해당 scope를 정리합니다. timeout/Ctrl+C도 정리를 시도합니다.
 
@@ -38,7 +39,7 @@ holder의 작은 메모리와 gate의 초기 Python 실행 비용도 있습니�
 벤치마크 PID(초기의 gate 포함)의 사용량입니다. 따라서 제한 실행과 기존 직접 실행의 준비 시간은
 구조가 조금 다릅니다. 메모리 페이지의 기존 소유 cgroup, 상위 cgroup 한도도 결과에 영향을 줄 수 있습니다.
 
-사용자 systemd, memory 컨트롤러 위임, cgroup.procs로의 이동 권한이 필요합니다.
+사용자 systemd와 memory 컨트롤러 위임, busctl이 필요합니다. 사용자 systemd가 Delegate=yes인 scope로 프로세스를 옮깁니다.
 권한이나 실제 한도 확인에 실패하면 setup_error를 기록하며 **제한 없이 대신 실행하지 않습니다**.
 자동 sudo나 머신 전역 설정 변경은 없습니다.
 
@@ -66,12 +67,14 @@ failed_unknown_oom이며 OOM으로 단정하지 않습니다. timeout은 별도 
 ## 아직 연결하지 않은 부분
 
 - #42의 load_mode 기능은 현재 main에 없습니다. 제한 요청에 load_mode를 넣으면 현재는 검증 오류로 막습니다.
-  #42 병합 후 조합 로직을 연결하고 none에서 OOM 후 다음 조건 진행을 실제 검증해야 합니다.
+  #42 병합 후 조합 로직을 연결하고 YAML 전체 경로로 다시 검증해야 합니다.
+  엔진 명령에 -lm none을 직접 전달한 하위 실행 경로의 OOM/후속 조건 검증은 완료했습니다.
 - 별도 TTFT PR #55와 독립 브랜치입니다. 메모리 제한 요청에서는 무제한 TTFT 서버가 실행되지 않도록
   TTFT를 비활성화합니다. 명시적인 ttft: true는 오류로 막습니다. 제한된 TTFT는 별도 구현 대상입니다.
 - 외부 exp-shared/scripts/validate_request.py와 exp-* 스킬은 저장소에 없어 수정·호환 검증하지 못했습니다.
   memory_max와 condition_timeout_seconds를 허용하고 실패 CSV 행에서 빈 TPS를 처리하도록 맞춰야 합니다.
-- 실제 노트북에서 권한·한도 적용·카운터 유지·OOM/timeout/중단 정리를 검증하기 전까지 초안 상태입니다.
+- 실제 노트북에서 scope 소속·한도·스왑0·카운터 유지·OOM 후 다음 실행을 검증했습니다.
+  #42 YAML 연결·외부 스킬 호환과 실제 timeout/Ctrl+C 검증 완료 전까지 초안 상태입니다.
 
 참고: [systemd 자원 제어](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html),
 [Linux cgroup v2 memory](https://docs.kernel.org/admin-guide/cgroup-v2.html).

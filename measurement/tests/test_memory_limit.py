@@ -11,12 +11,21 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
 import memory_limit as ml
+import memory_gate as gate
 import worker
 import summary
 import yaml
 
 
 class MemoryLimitTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux cgroup paths')
+    def test_gate_asks_user_manager_to_attach_and_fails_before_exec(self):
+        with patch('memory_gate.subprocess.run', return_value=subprocess.CompletedProcess([], 1, '', 'not delegated')) as attach, patch('memory_gate.os.execv') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'attachment failed'):
+                gate.enter('/sys/fs/cgroup/pp8-test.scope', 8192, ['/bin/true'])
+            self.assertIn('AttachProcessesToUnit', attach.call_args.args[0])
+            self.assertIn('ssau', attach.call_args.args[0])
+            execute.assert_not_called()
     def test_validation_rejects_bad_limits_and_timeouts(self):
         for value in ([], 1, [True], [0], [-1], [float('nan')], [float('inf')], ['1']):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -54,6 +63,7 @@ class MemoryLimitTests(unittest.TestCase):
             command = launch.call_args.args[0]
             self.assertIn('MemoryMax=8192', command)
             self.assertIn('MemorySwapMax=0', command)
+            self.assertIn('Delegate=yes', command)
             unit = command[command.index('--unit') + 1]
             self.assertEqual(cleanup.call_args.args[0], ['systemctl', '--user', 'stop', unit])
 
