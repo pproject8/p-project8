@@ -260,6 +260,7 @@ def run_monitored(cmd, monitor_path, context, timeout, interval=1.0):
     if timed_out:
         exc = subprocess.TimeoutExpired(cmd, timeout, output=stdout_text, stderr=stderr_text)
         exc.monitor_summary = summary
+        exc.returncode = returncode
         raise exc
     result = subprocess.CompletedProcess(cmd, returncode, stdout_text, stderr_text)
     result.monitor_summary = summary

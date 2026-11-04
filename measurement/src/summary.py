@@ -64,6 +64,9 @@ def show(folder):
         threads = row.get("threads", condition.get("threads", "미기록"))
         repeat = row.get("repeat", condition.get("repeat", "미기록"))
         print(f"\n[{test}] 스레드 {threads} | 내부 반복 {repeat}")
+        if 'memory_max' in row:
+            print("  메모리 한도: 모델 파일의 " + str(row['memory_max']) + "배 / " + gib(row.get('memory_max_bytes')))
+            print("  실행 상태: " + row.get('status', '미기록') + " | 종료 코드: " + str(row.get('returncode', '미기록')) + " | OOM kill 증가: " + number(row.get('oom_kill_delta'), '회', 0))
         if row:
             print("  TPS 평균 ± 표준편차 : " + number(row.get("avg_ts")) + " ± " + number(row.get("stddev_ts")))
         else:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
+from memory_limit import validate_request, run_limited
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -107,9 +108,9 @@ def parse_rows(stdout, req_id, repeat, order):
     return rows
 
 
-def append_rows(path, rows):
+def append_rows(path, rows, fields=FIELDS):
     with open(path, "a", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writerows(rows)
+        csv.DictWriter(f, fieldnames=fields).writerows(rows)
 
 
 def write_json(path, data):
@@ -120,6 +121,13 @@ def write_json(path, data):
 def run_request(request_path, settings, req_id=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
+    validate_request(req)
+    limited = 'memory_max' in req
+    if limited:
+        # The separate TTFT PR must not run an unconstrained server for this request.
+        req['ttft'] = False
+    timeout = req.get('condition_timeout_seconds', settings.get('condition_timeout_seconds', 3600))
+    fields = FIELDS + (["memory_max", "memory_max_bytes", "status", "returncode", "oom_kill_delta"] if limited else [])
 
     bench = Path(settings["bench_path"])
     model = Path(settings["models_dir"]) / req["model"]
@@ -135,7 +143,7 @@ def run_request(request_path, settings, req_id=None):
     shutil.copy(request_path, out_dir / "request.yaml")
     results_csv = out_dir / "results.csv"
     with open(results_csv, "w", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writeheader()
+        csv.DictWriter(f, fieldnames=fields).writeheader()
     monitor_csv = out_dir / "monitor.csv"
     with monitor_csv.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=MONITOR_FIELDS).writeheader()
@@ -166,6 +174,7 @@ def run_request(request_path, settings, req_id=None):
         "seed": None,
         "ok": 0,
         "failed": 0,
+        "condition_timeout_seconds": timeout,
         "loading_measurement": {
             "metric": "startup_to_warmup_s",
             "scope": "monotonic wall time before process launch to first observed llama-bench warmup progress marker; includes startup, backend, model, context and threadpool initialization",
@@ -208,9 +217,16 @@ def run_request(request_path, settings, req_id=None):
             },
         },
     }
+    if limited:
+        meta['memory_limit'] = {
+            'scope': 'per-condition cgroup: benchmark plus small Python scope holder; includes charged page cache/kernel memory; not RSS',
+            'monitor_scope': 'benchmark direct child includes exec gate startup; excludes scope holder; not systemd-run PID',
+            'ttft': 'disabled for memory-limited requests',
+            'conditions': [],
+        }
     write_json(out_dir / "meta.json", meta)
 
-    combos = make_combos(req)
+    combos = [(p, n, t, m) for p, n, t in make_combos(req) for m in req.get('memory_max', [None])]
     if req.get("shuffle"):
         meta["seed"] = req.get("seed", random.randrange(2 ** 32))
         random.Random(meta["seed"]).shuffle(combos)
@@ -218,17 +234,35 @@ def run_request(request_path, settings, req_id=None):
     print(f"요청 {req_id}: 총 {len(combos)}개 조건")
 
     with open(out_dir / "run.log", "w", encoding="utf-8") as log:
-        for i, (p, n, t) in enumerate(combos, 1):
+        for i, (p, n, t, multiplier) in enumerate(combos, 1):
             cmd = [str(bench), "-m", str(model), "-p", str(p), "-n", str(n),
                    "-t", str(t), "-r", str(req["repeat"]), "-o", "csv", "--progress"]
             log.write(f"[{i}/{len(combos)}] {' '.join(cmd)}\n")
             context = {"request_id": req_id, "order": i,
                        "test": f"pp{p}" if n == 0 else f"tg{n}",
                        "threads": t, "repeat": req["repeat"]}
+
+            def record_limit(evidence, returncode):
+                before, after = evidence.get('events_before'), evidence.get('events_after')
+                delta = (after['oom_kill'] - before['oom_kill']
+                         if before and after and 'oom_kill' in before and 'oom_kill' in after else None)
+                details = {**evidence, **context, 'returncode': returncode, 'oom_kill_delta': delta}
+                meta['memory_limit']['conditions'].append(details)
+                log.write('  메모리 제한: ' + json.dumps(details, ensure_ascii=False) + '\n')
+                return {key: details.get(key) for key in ('memory_max', 'memory_max_bytes', 'status', 'returncode', 'oom_kill_delta')}
+
+            def failure_row(extra):
+                append_rows(results_csv, [{**context, 'model': model.name, **extra}], fields)
+
             try:
-                result = run_monitored(cmd, monitor_csv, context,
-                                       timeout=settings.get("condition_timeout_seconds", 3600))
+                if limited:
+                    result = run_limited(cmd, monitor_csv, context, timeout, multiplier,
+                                         model.stat().st_size, out_dir, run_monitored)
+                else:
+                    result = run_monitored(cmd, monitor_csv, context, timeout=timeout)
             except subprocess.TimeoutExpired as exc:
+                if limited:
+                    failure_row(record_limit(exc.memory_limit, getattr(exc, 'returncode', None)))
                 meta["cpu_monitor"]["conditions"].append(
                     getattr(exc, "monitor_summary", {**context, "status": "unavailable", "samples": 0}))
                 loading = save_loading(context, getattr(exc, "monitor_summary", {}))
@@ -240,6 +274,7 @@ def run_request(request_path, settings, req_id=None):
                 log.flush()
                 write_json(out_dir / "meta.json", meta)
                 continue
+            extra = record_limit(result.memory_limit, result.returncode) if limited else {}
             summary = getattr(result, "monitor_summary", {**context, "status": "unavailable", "samples": 0})
             meta["cpu_monitor"]["conditions"].append(summary)
             loading = save_loading(context, summary)
@@ -251,15 +286,17 @@ def run_request(request_path, settings, req_id=None):
             if summary["status"] != "ok":
                 log.write(f"  CPU 기록 상태: {summary['status']} {summary.get('error', '')}\n")
             if result.returncode != 0:
+                if limited:
+                    failure_row(extra)
                 meta["failed"] += 1
                 log.write(f"  실패 (종료 코드 {result.returncode})\n{result.stderr}\n")
                 log.flush()
-                print(f"[{i}/{len(combos)}] 실패: p={p} n={n} t={t}")
+                print(f"[{i}/{len(combos)}] 실패: p={p} n={n} t={t} {extra.get('status', '')}")
                 write_json(out_dir / "meta.json", meta)
                 continue
 
             rows = parse_rows(result.stdout, req_id, req["repeat"], i)
-            append_rows(results_csv, rows)
+            append_rows(results_csv, [{**row, **extra} for row in rows], fields)
             meta["ok"] += 1
             write_json(out_dir / "meta.json", meta)
             log.write("  성공\n")
