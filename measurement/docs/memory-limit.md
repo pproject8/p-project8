@@ -73,8 +73,8 @@ failed_unknown_oom이며 OOM으로 단정하지 않습니다. timeout은 별도 
   TTFT를 비활성화합니다. 명시적인 ttft: true는 오류로 막습니다. 제한된 TTFT는 별도 구현 대상입니다.
 - 외부 exp-shared/scripts/validate_request.py와 exp-* 스킬은 저장소에 없어 수정·호환 검증하지 못했습니다.
   memory_max와 condition_timeout_seconds를 허용하고 실패 CSV 행에서 빈 TPS를 처리하도록 맞춰야 합니다.
-- 실제 노트북에서 scope 소속·한도·스왑0·카운터 유지·OOM 후 다음 실행을 검증했습니다.
-  #42 YAML 연결·외부 스킬 호환과 실제 timeout/Ctrl+C 검증 완료 전까지 초안 상태입니다.
+- 실제 노트북에서 scope 소속·한도·스왑0·카운터 유지·OOM 후 다음 실행과 timeout/Ctrl+C 정리를 검증했습니다.
+  #42 YAML 연결·외부 스킬 호환 완료 전까지 초안 상태입니다.
 
 참고: [systemd 자원 제어](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html),
 [Linux cgroup v2 memory](https://docs.kernel.org/admin-guide/cgroup-v2.html).
