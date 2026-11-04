@@ -64,6 +64,8 @@ def show(folder):
         threads = row.get("threads", condition.get("threads", "미기록"))
         repeat = row.get("repeat", condition.get("repeat", "미기록"))
         print(f"\n[{test}] 스레드 {threads} | 내부 반복 {repeat}")
+        if row.get('load_mode'):
+            print('  모델 읽기 방식      : '+row['load_mode'])
         if row:
             print("  TPS 평균 ± 표준편차 : " + number(row.get("avg_ts")) + " ± " + number(row.get("stddev_ts")))
         else:
@@ -87,7 +89,17 @@ def show(folder):
             print(f"  {label}: " + number(value, unit, 0) + note)
     if not items:
         print("\n기록된 측정값이 없습니다. run.log/error.txt를 확인하세요.")
+    loading=meta.get('model_loading',{})
+    print('\n[모델 로딩 시간 · 로드 함수 호출→반환]')
+    if not loading.get('conditions'):
+        print('  '+('비활성화' if loading.get('status')=='disabled' else '미기록'))
+    for item in loading.get('conditions',[]):
+        print(f"  읽기 {item['load_mode']} | 캐시 {item['cache']} | 성공 {item['ok']} / 실패 {item['failed']}")
+        print('  평균 ± 표준편차: '+number(item.get('mean_s'),'초',3)+' ± '+number(item.get('stddev_s'),'초',3)+' | CV: '+number(item.get('cv_percent'),'%'))
+    if loading.get('failed'):
+        print('  실패 사유: model_loading.csv / model-loading.log 확인')
     print("\n참고: 준비 시간은 워밍업 직전까지입니다. 클럭은 허용 CPU의 보고값 평균입니다.")
+    print('모델 로딩 시간은 초기화·추론과 별도이며, mmap은 반환 후에도 파일 읽기가 이어질 수 있습니다.')
     print("RSS 최대는 관측값이며 순간 피크를 놓칠 수 있습니다. read 계열 읽기량은 mmap 접근 전체가 아닙니다.")
     return 0
 

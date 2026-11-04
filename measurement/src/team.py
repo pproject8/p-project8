@@ -12,6 +12,7 @@ import uuid
 
 import yaml
 from worker import load_yaml, run_request
+from model_loading import validate_loading
 
 ROOT = Path(__file__).resolve().parents[1]
 STATES = ("queue", "running", "done", "failed")
@@ -30,6 +31,7 @@ def prepare(settings):
 def validate(req, settings):
     if not isinstance(req, dict):
         raise ValueError("요청은 YAML 객체여야 합니다")
+    validate_loading(req)
     model = req.get("model")
     if not isinstance(model, str) or not model or model in (".", "..") or "/" in model or "\\" in model:
         raise ValueError("model은 models_dir 안의 파일 이름만 지정하세요")
