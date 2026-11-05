@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
+from model_loading import validate_loading, run_loading, METHOD as LOADING_METHOD
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -107,9 +108,9 @@ def parse_rows(stdout, req_id, repeat, order):
     return rows
 
 
-def append_rows(path, rows):
+def append_rows(path, rows, fields=FIELDS):
     with open(path, "a", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writerows(rows)
+        csv.DictWriter(f, fieldnames=fields).writerows(rows)
 
 
 def write_json(path, data):
@@ -120,6 +121,8 @@ def write_json(path, data):
 def run_request(request_path, settings, req_id=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
+    validate_loading(req)
+    fields=FIELDS+(['load_mode'] if 'load_mode' in req else [])
 
     bench = Path(settings["bench_path"])
     model = Path(settings["models_dir"]) / req["model"]
@@ -135,7 +138,7 @@ def run_request(request_path, settings, req_id=None):
     shutil.copy(request_path, out_dir / "request.yaml")
     results_csv = out_dir / "results.csv"
     with open(results_csv, "w", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writeheader()
+        csv.DictWriter(f, fieldnames=fields).writeheader()
     monitor_csv = out_dir / "monitor.csv"
     with monitor_csv.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=MONITOR_FIELDS).writeheader()
@@ -210,7 +213,7 @@ def run_request(request_path, settings, req_id=None):
     }
     write_json(out_dir / "meta.json", meta)
 
-    combos = make_combos(req)
+    combos = [(p,n,t,mode) for p,n,t in make_combos(req) for mode in req.get('load_mode',['auto'])]
     if req.get("shuffle"):
         meta["seed"] = req.get("seed", random.randrange(2 ** 32))
         random.Random(meta["seed"]).shuffle(combos)
@@ -218,9 +221,11 @@ def run_request(request_path, settings, req_id=None):
     print(f"요청 {req_id}: 총 {len(combos)}개 조건")
 
     with open(out_dir / "run.log", "w", encoding="utf-8") as log:
-        for i, (p, n, t) in enumerate(combos, 1):
+        for i, (p, n, t, mode) in enumerate(combos, 1):
             cmd = [str(bench), "-m", str(model), "-p", str(p), "-n", str(n),
                    "-t", str(t), "-r", str(req["repeat"]), "-o", "csv", "--progress"]
+            if 'load_mode' in req:
+                cmd.extend(['-lm',mode])
             log.write(f"[{i}/{len(combos)}] {' '.join(cmd)}\n")
             context = {"request_id": req_id, "order": i,
                        "test": f"pp{p}" if n == 0 else f"tg{n}",
@@ -259,7 +264,7 @@ def run_request(request_path, settings, req_id=None):
                 continue
 
             rows = parse_rows(result.stdout, req_id, req["repeat"], i)
-            append_rows(results_csv, rows)
+            append_rows(results_csv, [{**row,**({'load_mode':mode} if 'load_mode' in req else {})} for row in rows],fields)
             meta["ok"] += 1
             write_json(out_dir / "meta.json", meta)
             log.write("  성공\n")
@@ -268,9 +273,29 @@ def run_request(request_path, settings, req_id=None):
                 print(f"[{i}/{len(combos)}] {row['test']} 스레드 {row['threads']} "
                       f"{float(row['avg_ts']):.1f} ± {float(row['stddev_ts']):.1f}")
 
-    meta["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
-    write_json(out_dir / "meta.json", meta)
-    print("결과 폴더:", out_dir)
+    print('모델 로딩 시간 측정 중 (준비 시간과 별도, 프로세스별 독립 반복)',flush=True)
+    def loading_progress(info):
+        meta['model_loading']=info
+        write_json(out_dir / 'meta.json',meta)
+
+    try:
+        meta['model_loading']=run_loading(req,settings,model,out_dir,req_id,
+                                          on_progress=loading_progress)
+    except BaseException as exc:
+        # TPS has already finished. Preserve it even for download exceptions
+        # outside the loader's normal handlers or a user interrupt in loading.
+        info=dict(meta.get('model_loading',{}))
+        info.update(measurement_method=LOADING_METHOD,
+                    status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
+                    error=f'{type(exc).__name__}: {exc}', incomplete=True)
+        info.setdefault('conditions',[])
+        meta['model_loading']=info
+        if not isinstance(exc,Exception):
+            raise  # Ctrl+C/SystemExit must still stop the caller and queue.
+    finally:
+        meta['finished']=datetime.datetime.now().isoformat(timespec='seconds')
+        write_json(out_dir/'meta.json',meta)
+        print('결과 폴더:',out_dir,flush=True)
 
 
 if __name__ == "__main__":

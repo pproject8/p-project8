@@ -12,6 +12,7 @@ import uuid
 
 import yaml
 from worker import load_yaml, run_request
+from model_loading import validate_loading
 
 ROOT = Path(__file__).resolve().parents[1]
 STATES = ("queue", "running", "done", "failed")
@@ -30,6 +31,7 @@ def prepare(settings):
 def validate(req, settings):
     if not isinstance(req, dict):
         raise ValueError("요청은 YAML 객체여야 합니다")
+    validate_loading(req)
     model = req.get("model")
     if not isinstance(model, str) or not model or model in (".", "..") or "/" in model or "\\" in model:
         raise ValueError("model은 models_dir 안의 파일 이름만 지정하세요")
@@ -129,6 +131,18 @@ def process_one(path, settings, base):
         run_request(running, settings, req_id=path.stem)
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         target = "failed" if meta.get("ok", 0) == 0 else "done"
+    except (KeyboardInterrupt,SystemExit):
+        # Loading may be interrupted after the worker finalized its TPS data.
+        # Keep that completed request out of restart recovery, then stop the
+        # queue instead of silently starting the next request after Ctrl+C.
+        try:
+            meta=json.loads((folder/'meta.json').read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            meta={}
+        if meta.get('finished') and meta.get('ok',0)>0:
+            running.rename(base/'done'/running.name)
+            print(f"종료: {path.stem} (TPS 보존, 로딩 중단)",flush=True)
+        raise
     except Exception as exc:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "error.txt").write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
