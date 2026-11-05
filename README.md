@@ -12,9 +12,9 @@
 
 기존 공용 큐·상시 워커의 운영 및 배포 안내는 [measurement/README.md](measurement/README.md)에 있습니다.
 
-현재는 Prefill·Decode 처리량, 준비 시간, 준비된 모델의 TTFT, Linux CPU 사용률·보고 클럭·메모리·디스크 읽기량·페이지 폴트 기록을 지원합니다. 온도, 자원 제한, 순수 모델 로딩 시간은 후속 구현 대상입니다.
+현재는 Prefill·Decode 처리량, 준비 시간, 엔진 timing 기반 TTFT, Linux CPU 사용률·보고 클럭·메모리·디스크 읽기량·페이지 폴트 기록을 지원합니다. 온도, 자원 제한, 순수 모델 로딩 시간은 후속 구현 대상입니다.
 
-TTFT는 TPS 측정 후 별도 loopback llama-server에서 입력 길이·스레드별로 측정해 `ttft.csv`에 저장합니다. 모델 로딩은 제외하고 로컬 HTTP 비용은 포함합니다. 실행 시간이 늘어나며, 서버 미설치 등은 사유를 기록하고 TPS 결과를 보존합니다. [측정 기준과 설정](measurement/docs/ttft.md)을 확인하세요.
+TTFT는 TPS 측정 후 별도 CPU 도구에서 llama.cpp timing 로그로 입력 평가와 첫 토큰 선택 시간을 측정해 `ttft.csv`에 저장합니다. 모델 로딩과 HTTP는 제외합니다. Linux b11706, libllama.so, g++가 필요하며 최초 실행 시 고정 버전 헤더를 다운로드합니다. 실패 사유를 기록하고 TPS 결과를 보존합니다. [측정 기준과 설정](measurement/docs/ttft.md)을 확인하세요.
 
 측정 후 `measurement` 폴더에서 **`./summary`**를 실행하면 최근 개인 결과를 한 번에 요약합니다. 특정 결과는 `./summary 요청ID`로 선택합니다. 자세한 사용법은 [개인 실행 안내](measurement/docs/personal-run.md#한-줄로-결과-요약-보기)를 참고하세요.
 

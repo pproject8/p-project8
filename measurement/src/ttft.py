@@ -1,19 +1,24 @@
-"""Ready-model client-observed TTFT; separate from llama-bench TPS."""
+"""Plan 6.1.2 TTFT from llama.cpp timing logs through the first sampled token."""
 import csv
-import contextlib
-import http.client
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import signal
-import socket
 import statistics
 import subprocess
-import time
+import sys
+import tempfile
+import urllib.request
 
+REVISION = "f74e2fa6a"
+METHOD = "llama_cpp_first_eval_timing_v1"
+ROOT = Path(__file__).resolve().parent
 FIELDS = ["request_id", "threads", "prompt_tokens", "repetition", "status",
-          "ttft_ms", "first_token_id", "evaluated_tokens", "error"]
+          "ttft_ms", "first_token_id", "evaluated_tokens", "error",
+          "measurement_method", "prefill_ms", "first_token_ms", "prompt_eval_ms",
+          "eval_ms", "first_token_wall_ms", "sampled_tokens", "cache", "load_mode"]
 
 
 def validate_options(req, settings):
@@ -25,108 +30,114 @@ def validate_options(req, settings):
             raise ValueError(f"{key}는 양수여야 합니다")
 
 
-def request(port, endpoint, payload=None, timeout=300):
-    """No proxy/environment routing: connect only to our loopback server."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-    try:
-        body = None if payload is None else json.dumps(payload).encode()
-        conn.request("GET" if body is None else "POST", endpoint, body,
-                     {"Content-Type": "application/json"})
-        response = conn.getresponse()
-        if response.status != 200:
-            raise ValueError(f"HTTP {response.status}: {response.read(4096)!r}")
-        return json.loads(response.read())
-    finally:
-        conn.close()
+def prepare_helper(settings, log):
+    if sys.platform != "linux":
+        raise RuntimeError("TTFT 엔진 도구는 현재 Linux만 지원합니다")
+    bench = Path(settings["bench_path"]).resolve()
+    version = subprocess.run([str(bench), "--version"], capture_output=True, text=True, timeout=10)
+    if version.returncode or REVISION not in version.stdout + version.stderr:
+        raise RuntimeError(f"ABI 보호: llama.cpp {REVISION} 빌드만 지원합니다")
+    libdir = bench.parent
+    library = libdir / "libllama.so"
+    if not library.is_file():
+        raise RuntimeError("bench_path 옆의 libllama.so가 필요합니다")
+    source = ROOT / "ttft_engine.cpp"
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    lib_hash = hashlib.sha256(library.read_bytes()).hexdigest()
+    build = Path(settings["work_dir"]) / "tools" / f"ttft-{REVISION}" / (source_hash[:12] + "-" + lib_hash[:12])
+    build.mkdir(parents=True, exist_ok=True)
+    helper = build / "ttft-engine"
+    files = {"llama.h": "include/llama.h", "LICENSE": "LICENSE"}
+    files.update({name: "ggml/include/" + name for name in
+                  ("ggml.h", "ggml-cpu.h", "ggml-backend.h", "ggml-opt.h", "gguf.h", "ggml-alloc.h", "ggml-cpp.h")})
+    manifest = {}
+    for name, path in files.items():
+        target = build / name
+        if not target.is_file():
+            with urllib.request.urlopen(f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{REVISION}/{path}", timeout=30) as response:
+                data = response.read()
+            temporary = build / (name + f".{os.getpid()}.tmp")
+            temporary.write_bytes(data)
+            temporary.replace(target)
+        manifest[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    if not helper.is_file():
+        temporary = build / f"ttft-engine.{os.getpid()}.tmp"
+        command = ["g++", "-std=c++17", "-O2", str(source), "-I" + str(build),
+                   "-L" + str(libdir), "-Wl,-rpath," + str(libdir), "-lllama", "-lggml-base", "-lggml", "-o", str(temporary)]
+        try:
+            result = subprocess.run(command, stdout=log, stderr=log, timeout=120)
+            if result.returncode:
+                raise RuntimeError("TTFT 도구 컴파일 실패: ttft-build.log 확인")
+            temporary.replace(helper)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return helper, libdir, dict(llama_revision=REVISION, helper_source_sha256=source_hash,
+                               libllama_sha256=lib_hash, headers_sha256=manifest)
 
 
-def prompt_for_length(tokens, count):
-    if not tokens or any(type(t) is not int for t in tokens):
-        raise ValueError("tokenize 응답에 정수 토큰이 없습니다")
-    # Preserve the tokenizer's leading special token; repeat ordinary seed tokens.
-    tail = tokens[1:] or tokens
-    return [tokens[0]] + [tail[i % len(tail)] for i in range(count - 1)]
-
-
-def measure(port, tokens, timeout):
-    payload = {"prompt": tokens, "n_predict": 1, "stream": True,
-               "cache_prompt": False, "return_tokens": True, "temperature": 0,
-               "seed": 1, "ignore_eos": True, "id_slot": 0}
-    body = json.dumps(payload).encode()
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-    first_ms = first_id = None
-    final = None
-    pending = b""
-    started = time.perf_counter()
-    try:
-        conn.request("POST", "/completion", body, {"Content-Type": "application/json"})
-        response = conn.getresponse()
-        if response.status != 200:
-            raise ValueError(f"completion HTTP {response.status}")
-        while True:
-            remaining = timeout - (time.perf_counter() - started)
-            if remaining <= 0:
-                raise TimeoutError("TTFT request deadline exceeded")
-            # read1 returns available bytes instead of waiting for a large buffer.
-            sock = conn.sock or response.fp.raw._sock
-            sock.settimeout(remaining)
-            chunk = response.read1(65536)
-            observed_ms = (time.perf_counter() - started) * 1000
-            if not chunk:
-                break
-            pending += chunk
-            if len(pending) > 1024 * 1024:
-                raise ValueError("SSE event too large")
-            while b"\n" in pending:
-                line, pending = pending.split(b"\n", 1)
-                if not line.startswith(b"data:"):
-                    continue
-                data = line[5:].strip()
-                if data == b"[DONE]":
-                    continue
-                event = json.loads(data)
-                if not isinstance(event, dict):
-                    raise ValueError("SSE data must be an object")
-                if "error" in event:
-                    raise ValueError(str(event["error"]))
-                generated = event.get("tokens", [])
-                if not isinstance(generated, list) or any(type(t) is not int for t in generated):
-                    raise ValueError("SSE tokens must be integer IDs")
-                if first_ms is None and generated:
-                    first_ms, first_id = observed_ms, generated[0]
-                if event.get("stop"):
-                    final = event
-        if first_ms is None or final is None:
-            raise ValueError("first token 또는 완료 이벤트가 없습니다")
-        timings = final.get("timings")
-        evaluated = timings.get("prompt_n") if isinstance(timings, dict) else None
-        # tokens_cached describes the slot after completion in b11706; it is
-        # not the number of tokens skipped. prompt_n counts evaluated tokens.
-        if evaluated != len(tokens) or final.get("truncated", False):
-            raise ValueError(f"입력 처리 검증 실패: prompt_n={evaluated}, expected={len(tokens)}")
-        return {"ttft_ms": round(first_ms, 6), "first_token_id": first_id,
-                "evaluated_tokens": evaluated}
-    finally:
-        conn.close()
-
-
-def stop_server(proc):
+def stop_process(proc):
     if proc.poll() is not None:
         return
     if os.name == "posix":
-        with contextlib.suppress(ProcessLookupError):
+        try:
             os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     else:
         proc.terminate()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         if os.name == "posix":
-            with contextlib.suppress(ProcessLookupError):
+            try:
                 os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         else:
             proc.kill()
         proc.wait()
+
+
+def parse_timing(log, prompt):
+    records = [line[len("PP8_TTFT "):] for line in log.splitlines() if line.startswith("PP8_TTFT ")]
+    if len(records) != 1 or "llama_perf_context_print:" not in log or "llama_perf_sampler_print:" not in log:
+        raise ValueError("첫 토큰의 엔진 timing 로그가 없거나 중복되었습니다")
+    data = json.loads(records[0])
+    if not isinstance(data, dict):
+        raise ValueError("잘못된 timing 데이터")
+    for key in ("ttft_ms", "prefill_ms", "first_token_ms", "prompt_eval_ms", "eval_ms", "first_token_wall_ms"):
+        value = data.get(key)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"잘못된 timing 값: {key}")
+    if data["ttft_ms"] <= 0 or data["first_token_wall_ms"] <= 0:
+        raise ValueError("TTFT는 양수여야 합니다")
+    if type(data.get("evaluated_tokens")) is not int or data["evaluated_tokens"] != prompt:
+        raise ValueError("실제 입력 토큰 수 불일치")
+    if type(data.get("sampled_tokens")) is not int or data["sampled_tokens"] != 1:
+        raise ValueError("첫 토큰만 생성해야 합니다")
+    if type(data.get("first_token_id")) is not int or data["first_token_id"] < 0:
+        raise ValueError("첫 토큰 ID가 없습니다")
+    if not math.isclose(data["prefill_ms"], data["prompt_eval_ms"] + data["eval_ms"], abs_tol=1e-6):
+        raise ValueError("Prefill timing 합계 불일치")
+    if not math.isclose(data["ttft_ms"], data["prefill_ms"] + data["first_token_ms"], abs_tol=1e-6):
+        raise ValueError("TTFT timing 합계 불일치")
+    if prompt > 1 and data["eval_ms"] != 0:
+        raise ValueError("첫 토큰 이후 decode 시간이 섞였습니다")
+    return {key: data[key] for key in FIELDS if key in data}
+
+
+def measure(helper, libdir, model, threads, prompt, timeout, log_path):
+    command = [str(helper), str(model), str(libdir), str(threads), str(prompt)]
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(json.dumps(command) + "\n"); log.flush()
+        proc = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=os.name == "posix")
+        try:
+            proc.wait(timeout=timeout)
+            if proc.returncode:
+                raise RuntimeError(f"TTFT engine exited {proc.returncode}")
+        finally:
+            stop_process(proc)
+    return parse_timing(log_path.read_text(encoding="utf-8", errors="replace"), prompt)
 
 
 def summarize(rows):
@@ -138,98 +149,60 @@ def summarize(rows):
         values = [r["ttft_ms"] for r in items if r["status"] == "ok"]
         mean = statistics.mean(values) if values else None
         sd = statistics.stdev(values) if len(values) > 1 else None
-        result.append({"threads": threads, "prompt_tokens": prompt,
-                       "ok": len(values), "failed": len(items) - len(values),
-                       "mean_ms": mean, "stddev_ms": sd,
-                       "cv_percent": sd / mean * 100 if sd is not None and mean else None})
+        result.append(dict(threads=threads, prompt_tokens=prompt, ok=len(values), failed=len(items)-len(values),
+                           mean_ms=mean, stddev_ms=sd, cv_percent=sd/mean*100 if sd is not None and mean else None))
     return result
 
 
 def run_ttft(req, settings, model, out_dir, request_id):
     validate_options(req, settings)
-    server = Path(settings.get("server_path", str(Path(settings["bench_path"]).with_name("llama-server"))))
+    out_dir = Path(out_dir)
+    info = dict(enabled=req.get("ttft", True), measurement_method=METHOD,
+                definition="plan 6.1.2: llama.cpp timing-log prompt evaluation plus first-token sampler time; excludes model load, process/context startup, HTTP, tokenization and second-token decode",
+                cache_prompt=False, cache="uncontrolled", load_mode="auto",
+                prompt="llama-bench-style synthetic rand()%vocab token IDs, optional BOS; srand(1) per fresh process; not identical benchmark token stream",
+                repetitions="one discarded fresh-process warmup per condition, then repeat independent fresh-model/context first evaluations; gen_tokens does not multiply conditions",
+                mmap_note="first evaluation may include deferred mmap reads; OS file cache is not cleared or forced warm; not a cold-disk TTFT",
+                status="pending" if req.get("ttft", True) else "disabled", conditions=[])
     rows = []
-    info = {"enabled": req.get("ttft", True), "server_path": str(server),
-            "definition": "client-observed monotonic wall time immediately before POST to first SSE generated token ID; includes loopback HTTP, tokenization excluded using token IDs; model startup and one warmup per condition excluded",
-            "cache_prompt": False, "prompt": "synthetic token IDs from tokenize(Hello world., add_special=true); repeated to exact length; not a chat prompt",
-            "repetitions": "repeat measured requests per threads/prompt_tokens condition; one unrecorded warmup per condition; gen_tokens does not multiply TTFT conditions",
-            "status": "disabled" if not req.get("ttft", True) else "pending", "conditions": []}
-    def values(key):
-        v = req[key]
-        return v if isinstance(v, list) else [v]
-    with (out_dir / "ttft.csv").open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=FIELDS)
-        writer.writeheader()
+    with (out_dir/"ttft.csv").open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=FIELDS); writer.writeheader()
         if not info["enabled"]:
             return info
+        error = None
+        try:
+            with (out_dir/"ttft-build.log").open("w", encoding="utf-8") as log:
+                helper, libdir, provenance = prepare_helper(settings, log)
+            info.update(provenance)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            error = f"{type(exc).__name__}: {exc}"
+        def values(key):
+            value = req[key]
+            return value if isinstance(value, list) else [value]
         for threads in dict.fromkeys(values("threads")):
-            proc = None
-            error = None
-            try:
-                if not server.is_file():
-                    raise FileNotFoundError(f"llama-server가 없습니다: {server}")
-                with socket.socket() as reservation:
-                    reservation.bind(("127.0.0.1", 0))
-                    port = reservation.getsockname()[1]
-                command = [str(server), "-m", str(model), "--host", "127.0.0.1",
-                           "--port", str(port), "-t", str(threads), "-tb", str(threads),
-                           "-ngl", "0", "-np", "1", "-c", str(max(values("prompt_tokens")) + 32)]
-                with (out_dir / f"ttft-server-t{threads}.log").open("w", encoding="utf-8") as log:
-                    log.write(json.dumps(command) + "\n"); log.flush()
-                    proc = subprocess.Popen(command, stdout=log, stderr=log,
-                                            start_new_session=os.name == "posix")
-                    deadline = time.monotonic() + settings.get("ttft_startup_timeout_seconds", 300)
-                    while True:
-                        if proc.poll() is not None:
-                            raise RuntimeError(f"server exited: {proc.returncode}")
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise TimeoutError("TTFT server startup timeout")
-                        try:
-                            request(port, "/health", timeout=min(1, remaining))
-                            break
-                        except (OSError, ValueError, http.client.HTTPException):
-                            time.sleep(min(0.1, remaining))
-                    timeout = settings.get("ttft_request_timeout_seconds", 300)
-                    tokenized = request(port, "/tokenize", {"content": "Hello world.", "add_special": True}, timeout=timeout)
-                    if not isinstance(tokenized, dict) or "tokens" not in tokenized:
-                        raise ValueError("tokenize response has no tokens")
-                    seed = tokenized["tokens"]
-                    for prompt in dict.fromkeys(values("prompt_tokens")):
-                        tokens = prompt_for_length(seed, prompt)
-                        warmup_error = None
-                        try:
-                            measure(port, tokens, timeout)
-                        except (OSError, ValueError, RuntimeError, http.client.HTTPException) as exc:
-                            warmup_error = f"warmup failed: {exc}"
-                        for repetition in range(1, req["repeat"] + 1):
-                            row = {"request_id": request_id, "threads": threads,
-                                   "prompt_tokens": prompt, "repetition": repetition}
-                            try:
-                                if warmup_error:
-                                    raise RuntimeError(warmup_error)
-                                row.update(measure(port, tokens, timeout), status="ok")
-                            except (OSError, ValueError, RuntimeError, http.client.HTTPException) as exc:
-                                row.update(status="failed", error=f"{type(exc).__name__}: {exc}")
-                            rows.append(row); writer.writerow(row); output.flush()
-                            if row["status"] != "ok":
-                                # The server may still be processing a timed-out request.
-                                # Abort this server rather than queueing another measurement.
-                                raise RuntimeError(row["error"])
-            except (OSError, ValueError, RuntimeError, http.client.HTTPException) as exc:
-                error = f"{type(exc).__name__}: {exc}"
-            finally:
-                if proc is not None:
-                    stop_server(proc)
-            if error:
-                for prompt in dict.fromkeys(values("prompt_tokens")):
-                    for repetition in range(1, req["repeat"] + 1):
-                        if any(r["threads"] == threads and r["prompt_tokens"] == prompt and r["repetition"] == repetition for r in rows):
-                            continue
-                        row = {"request_id": request_id, "threads": threads, "prompt_tokens": prompt,
-                               "repetition": repetition, "status": "unavailable", "error": error}
-                        rows.append(row); writer.writerow(row); output.flush()
+            for prompt in dict.fromkeys(values("prompt_tokens")):
+                warmup_error = None
+                timeout = settings.get("ttft_request_timeout_seconds", 300)
+                if error is None:
+                    try:
+                        measure(helper, libdir, model, threads, prompt, timeout,
+                                out_dir/f"ttft-t{threads}-p{prompt}-warmup.log")
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                        warmup_error = f"warmup failed: {type(exc).__name__}: {exc}"
+                for repetition in range(1, req["repeat"] + 1):
+                    row = dict(request_id=request_id, threads=threads, prompt_tokens=prompt, repetition=repetition,
+                               measurement_method=METHOD, cache="uncontrolled", load_mode="auto")
+                    try:
+                        if error or warmup_error:
+                            raise RuntimeError(error or warmup_error)
+                        row.update(measure(helper, libdir, model, threads, prompt, timeout,
+                                           out_dir/f"ttft-t{threads}-p{prompt}-r{repetition}.log"), status="ok")
+                    except subprocess.TimeoutExpired as exc:
+                        row.update(status="timeout", error=f"TimeoutExpired: {exc}")
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                        row.update(status="unavailable" if error or warmup_error else "failed", error=f"{type(exc).__name__}: {exc}")
+                    rows.append(row); writer.writerow(row); output.flush()
     info["conditions"] = summarize(rows)
-    ok = sum(r["status"] == "ok" for r in rows)
-    info.update(ok=ok, failed=len(rows) - ok, status="ok" if ok == len(rows) else "partial" if ok else "unavailable")
+    ok = sum(row["status"] == "ok" for row in rows)
+    info.update(ok=ok, failed=len(rows)-ok, status="ok" if ok == len(rows) else "partial" if ok else "unavailable")
     return info

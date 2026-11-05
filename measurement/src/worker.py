@@ -272,7 +272,7 @@ def run_request(request_path, settings, req_id=None):
 
     # Separate inference engine run after all TPS measurements; never overlap them.
     if req.get("ttft", True):
-        print("준비된 모델의 TTFT 측정 중 (TPS와 별도, 조건별 워밍업 1회 제외)", flush=True)
+        print("엔진 timing TTFT 측정 중 (로딩 제외·첫 평가, 조건별 워밍업 1회 제외)", flush=True)
     meta["ttft_measurement"] = run_ttft(req, settings, model, out_dir, req_id)
     meta["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
     write_json(out_dir / "meta.json", meta)

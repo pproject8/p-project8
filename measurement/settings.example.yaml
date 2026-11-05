@@ -4,7 +4,6 @@ work_dir: /srv/pp8/work
 default_model: Llama-3.2-3B-Instruct-Q4_K_M.gguf
 condition_timeout_seconds: 3600
 
-# 생략하면 bench_path 옆의 llama-server를 사용합니다 (동일 빌드 권장).
-server_path: /srv/pp8/llama/llama-b11706/llama-server
-ttft_startup_timeout_seconds: 300
+# TTFT: Linux b11706(f74e2fa6a), libllama.so, g++ 필요. 최초 실행 시 헤더 다운로드.
+# 모델 로드부터 첫 토큰까지 한 프로세스의 제한 시간입니다.
 ttft_request_timeout_seconds: 300

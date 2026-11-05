@@ -88,14 +88,18 @@ def show(folder):
     if not items:
         print("\n기록된 측정값이 없습니다. run.log/error.txt를 확인하세요.")
     ttft = meta.get("ttft_measurement", {})
-    print("\n[TTFT · 준비된 모델, 로컬 HTTP 포함]")
+    if ttft.get("measurement_method") == "llama_cpp_first_eval_timing_v1":
+        print("\n[TTFT · engine timing, 로딩 제외·첫 평가]")
+        print("  Prefill + 첫 토큰 선택 | 파일 캐시 미통제 | 이전 HTTP TTFT와 직접 비교 금지")
+    else:
+        print("\n[TTFT · 준비된 모델, 로컬 HTTP 포함 (이전 방식)]")
     if not ttft.get("conditions"):
         print("  " + ("비활성화" if ttft.get("status") == "disabled" else "미기록"))
     for item in ttft.get("conditions", []):
         print(f"  입력 {item['prompt_tokens']} | 스레드 {item['threads']} | 성공 {item['ok']} / 실패 {item['failed']}")
         print("  평균 ± 표준편차: " + number(item.get("mean_ms"), " ms") + " ± " + number(item.get("stddev_ms"), " ms") + " | CV: " + number(item.get("cv_percent"), "%"))
     if ttft.get("failed"):
-        print("  실패 사유: ttft.csv 및 ttft-server-t*.log 확인")
+        print("  실패 사유: ttft.csv 및 " + ("ttft-build.log / ttft-t*.log" if ttft.get("measurement_method") == "llama_cpp_first_eval_timing_v1" else "ttft-server-t*.log") + " 확인")
     print("\n참고: 준비 시간은 워밍업 직전까지입니다. 클럭은 허용 CPU의 보고값 평균입니다.")
     print("RSS 최대는 관측값이며 순간 피크를 놓칠 수 있습니다. read 계열 읽기량은 mmap 접근 전체가 아닙니다.")
     return 0
