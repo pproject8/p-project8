@@ -171,7 +171,7 @@ def summarize(rows):
     return result
 
 
-def run_loading(req, settings, model, out_dir, request_id):
+def run_loading(req, settings, model, out_dir, request_id, on_progress=None):
     validate_loading(req)
     modes = list(dict.fromkeys(req.get('load_mode',['auto'])))
     repeats = req.get('loading_repeat', req['repeat'])
@@ -181,6 +181,14 @@ def run_loading(req, settings, model, out_dir, request_id):
                 mmap_note='mmap may defer reads until inference; load-only process elapsed is not time to read every weight page',
                 cache=cache,repetitions=repeats,conditions=[])
     rows=[]
+    info.update(expected_samples=len(modes)*repeats, completed_samples=0)
+    def publish_progress():
+        info['conditions']=summarize(rows)
+        ok=sum(row['status']=='ok' for row in rows)
+        info.update(ok=ok,failed=len(rows)-ok,completed_samples=len(rows))
+        if on_progress is not None:
+            on_progress(info.copy())
+    publish_progress()
     with (Path(out_dir)/'model_loading.csv').open('w',newline='',encoding='utf-8') as output:
         writer=csv.DictWriter(output,fieldnames=FIELDS); writer.writeheader()
         if not req.get('measure_loading',True):
@@ -188,11 +196,14 @@ def run_loading(req, settings, model, out_dir, request_id):
         if 'memory_max' in req:
             info.update(status='disabled',reason='memory-limited model loading requires resource-runner integration; never run an unlimited helper')
             return info
+        info['status']='running'
+        publish_progress()
         with (Path(out_dir)/'model-loading.log').open('w',encoding='utf-8') as log:
             error=None
             try:
                 helper,libdir,provenance=prepare_helper(settings,log)
                 info.update(provenance)
+                publish_progress()
             except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
                 error=f'{type(exc).__name__}: {exc}'
             for mode in modes:
@@ -215,6 +226,7 @@ def run_loading(req, settings, model, out_dir, request_id):
                     except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError) as exc:
                         row.update(status='unavailable' if error else 'failed',error=f'{type(exc).__name__}: {exc}')
                     rows.append(row);writer.writerow(row);output.flush()
+                    publish_progress()
     info['conditions']=summarize(rows)
     ok=sum(row['status']=='ok' for row in rows)
     info.update(status='ok' if ok==len(rows) else 'partial' if ok else 'unavailable',ok=ok,failed=len(rows)-ok)

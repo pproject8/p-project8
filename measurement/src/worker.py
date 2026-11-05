@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
-from model_loading import validate_loading, run_loading
+from model_loading import validate_loading, run_loading, METHOD as LOADING_METHOD
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -274,10 +274,28 @@ def run_request(request_path, settings, req_id=None):
                       f"{float(row['avg_ts']):.1f} ± {float(row['stddev_ts']):.1f}")
 
     print('모델 로딩 시간 측정 중 (준비 시간과 별도, 프로세스별 독립 반복)',flush=True)
-    meta['model_loading']=run_loading(req,settings,model,out_dir,req_id)
-    meta["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
-    write_json(out_dir / "meta.json", meta)
-    print("결과 폴더:", out_dir)
+    def loading_progress(info):
+        meta['model_loading']=info
+        write_json(out_dir / 'meta.json',meta)
+
+    try:
+        meta['model_loading']=run_loading(req,settings,model,out_dir,req_id,
+                                          on_progress=loading_progress)
+    except BaseException as exc:
+        # TPS has already finished. Preserve it even for download exceptions
+        # outside the loader's normal handlers or a user interrupt in loading.
+        info=dict(meta.get('model_loading',{}))
+        info.update(measurement_method=LOADING_METHOD,
+                    status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
+                    error=f'{type(exc).__name__}: {exc}', incomplete=True)
+        info.setdefault('conditions',[])
+        meta['model_loading']=info
+        if not isinstance(exc,Exception):
+            raise  # Ctrl+C/SystemExit must still stop the caller and queue.
+    finally:
+        meta['finished']=datetime.datetime.now().isoformat(timespec='seconds')
+        write_json(out_dir/'meta.json',meta)
+        print('결과 폴더:',out_dir,flush=True)
 
 
 if __name__ == "__main__":

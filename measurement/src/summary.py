@@ -95,6 +95,12 @@ def show(folder):
         print('  시작·백엔드·모델 로드·종료 포함 | time 해상도 0.01초 | 이전 API 시간과 직접 비교 금지')
     else:
         print('\n[모델 로딩 시간 · 로드 함수 호출→반환 (이전 방식)]')
+    if loading.get('incomplete'):
+        label='사용자 중단' if loading.get('status')=='interrupted' else '실패'
+        print('  로딩 상태: '+label+' (완료된 TPS 결과는 보존됨)')
+        print('  사유: '+loading.get('error','미기록'))
+        if 'completed_samples' in loading:
+            print(f"  완료된 로딩 표본: {loading['completed_samples']} / {loading.get('expected_samples','미기록')} (아래 통계는 완료 표본만)")
     if not loading.get('conditions'):
         print('  '+('비활성화' if loading.get('status')=='disabled' else '미기록'))
     for item in loading.get('conditions',[]):

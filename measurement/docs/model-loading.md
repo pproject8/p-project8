@@ -46,6 +46,10 @@ cache: cold            # cold / warm, 생략 시 cold
 
 model_loading.csv의 기존 열을 유지하고 `measurement_method`, `model_load_api_s`를 추가합니다. 주 지표 `model_load_s`의 정의는 `gnu_time_load_process_v1`로 명시합니다. 실패 시간은 빈칸이며 0초로 채우지 않습니다. timeout·Ctrl+C 시 time과 로딩 자식 프로세스를 함께 종료합니다.
 
+로딩의 예상하지 못한 오류(예: 헤더 다운로드 중 IncompleteRead)도 TPS 완료 상태를 되돌리지 않습니다. meta.json의 model_loading에 실패 사유를 기록하고 finished를 남겨 ./summary로 기존 TPS를 조회할 수 있습니다. 이미 끝난 로딩 표본은 CSV와 진행 메타데이터에 보존하고 완료 표본만 집계합니다.
+
+로딩 도중 Ctrl+C를 누르면 model_loading.status는 interrupted로 남고 완료된 TPS를 조회할 수 있습니다. 큐에서도 TPS 성공이 있는 요청은 done(일부 TPS 실패가 있으면 partial)으로 보존한 뒤 중단을 다시 전달해 다음 요청을 시작하지 않습니다. finished는 로딩 성공을 보장하지 않으므로 model_loading.status도 함께 확인합니다. TPS 도중 중단은 이 처리 범위가 아니며 기존대로 미완료입니다.
+
 meta.json과 ./summary에는 주 지표의 평균·표본 표준편차·CV·성공/실패 수를 표시합니다. 한 표본이면 SD/CV는 미기록입니다. 이전 함수 시간 방식의 결과는 원래 정의로 표시하고 수정하지 않습니다. 새 프로세스 경과시간과 이전 함수 시간을 같은 반복으로 합치거나 직접 개선율을 계산하지 않습니다.
 
 `model_file_gb_per_s`는 파일 크기/프로세스 경과시간의 비율이며 실제 디스크 읽기 대역폭이 아닙니다. TPS만 필요하면 요청에 `measure_loading: false`를 넣습니다. monitor.csv는 기존 TPS용이며 별도 로딩 프로세스의 자원 사용량을 포함하지 않습니다.
