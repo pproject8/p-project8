@@ -90,7 +90,11 @@ def show(folder):
     if not items:
         print("\n기록된 측정값이 없습니다. run.log/error.txt를 확인하세요.")
     loading=meta.get('model_loading',{})
-    print('\n[모델 로딩 시간 · 로드 함수 호출→반환]')
+    if loading.get('measurement_method') == 'gnu_time_load_process_v1':
+        print('\n[모델 로딩 시간 · time 로딩 전용 프로세스]')
+        print('  시작·백엔드·모델 로드·종료 포함 | time 해상도 0.01초 | 이전 API 시간과 직접 비교 금지')
+    else:
+        print('\n[모델 로딩 시간 · 로드 함수 호출→반환 (이전 방식)]')
     if not loading.get('conditions'):
         print('  '+('비활성화' if loading.get('status')=='disabled' else '미기록'))
     for item in loading.get('conditions',[]):
@@ -99,7 +103,7 @@ def show(folder):
     if loading.get('failed'):
         print('  실패 사유: model_loading.csv / model-loading.log 확인')
     print("\n참고: 준비 시간은 워밍업 직전까지입니다. 클럭은 허용 CPU의 보고값 평균입니다.")
-    print('모델 로딩 시간은 초기화·추론과 별도이며, mmap은 반환 후에도 파일 읽기가 이어질 수 있습니다.')
+    print('새 로딩 시간은 프로세스 초기화·정리를 포함하고 추론은 제외합니다. mmap의 지연 읽기는 이후 추론으로 넘어갈 수 있습니다.')
     print("RSS 최대는 관측값이며 순간 피크를 놓칠 수 있습니다. read 계열 읽기량은 mmap 접근 전체가 아닙니다.")
     return 0
 

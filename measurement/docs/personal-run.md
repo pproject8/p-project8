@@ -215,7 +215,7 @@ ls -lt ~/pp8-work/results
 | --- | --- |
 | results.csv | Prefill·Decode 평균 속도와 표준편차, 조건 |
 | loading.csv | 기존 프로세스 준비 시간 |
-| model_loading.csv | 별도 프로세스의 모델 로드 함수 시간, 반복·캐시·읽기 방식 |
+| model_loading.csv | time 로딩 전용 프로세스 경과시간과 보조 API 시간, 반복·캐시·읽기 방식 |
 | monitor.csv | 시간별 CPU 사용률·논리 CPU별 클럭, 조건과 PID |
 | meta.json | 모델 해시, 실행 환경, 성공·실패 개수, 측정 코드 Git 커밋 |
 | request.yaml | 실행에 사용한 요청 원본 |

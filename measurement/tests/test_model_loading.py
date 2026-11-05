@@ -51,18 +51,22 @@ class LoadingTests(unittest.TestCase):
     def test_each_repeat_clears_cache_then_starts_a_new_process(self):
         events=[]
         def clear(settings):events.append('clear')
-        def execute(cmd,**kwargs):
+        def execute(cmd,*args,**kwargs):
             self.assertEqual(events[-1],'clear')
             events.append('process')
-            return subprocess.CompletedProcess(cmd,0,'{"model_load_s":0.25}','')
-        with patch('model_loading.clear_cache',side_effect=clear),patch('model_loading.subprocess.run',side_effect=execute) as run:
+            return subprocess.CompletedProcess(cmd,0,'{"model_load_s":0.25}',''),0.5
+        with patch('model_loading.clear_cache',side_effect=clear),patch('model_loading.run_timed_process',side_effect=execute) as run:
             info=loading.run_loading(dict(repeat=3,load_mode=['mmap','none']),self.settings,self.model,self.root,'test')
         self.assertEqual(run.call_count,6)
         self.assertEqual(events,['clear','process']*6)
         self.assertEqual(info['ok'],6)
+        self.assertEqual(info['conditions'][0]['mean_s'],0.5)
         self.assertEqual(info['conditions'][0]['stddev_s'],0)
         with (self.root/'model_loading.csv').open(encoding='utf-8') as f:
-            self.assertEqual(len(list(csv.DictReader(f))),6)
+            rows=list(csv.DictReader(f))
+            self.assertEqual(len(rows),6)
+            self.assertEqual(rows[0]['model_load_api_s'],'0.25')
+            self.assertEqual(rows[0]['measurement_method'],loading.METHOD)
 
     def test_cold_cache_failure_never_falls_back_to_warm(self):
         with patch('model_loading.clear_cache',side_effect=RuntimeError('not registered')),patch('model_loading.subprocess.run') as execute,patch('model_loading.warm_model') as warm:
@@ -71,14 +75,14 @@ class LoadingTests(unittest.TestCase):
         self.assertEqual((info['ok'],info['failed']),(0,2))
 
     def test_warm_reads_model_before_every_process(self):
-        with patch('model_loading.warm_model') as warm,patch('model_loading.clear_cache') as clear,patch('model_loading.subprocess.run',return_value=subprocess.CompletedProcess([],0,'{"model_load_s":1}','')):
+        with patch('model_loading.warm_model') as warm,patch('model_loading.clear_cache') as clear,patch('model_loading.run_timed_process',return_value=(subprocess.CompletedProcess([],0,'{"model_load_s":1}',''),1.25)):
             info=loading.run_loading(dict(repeat=10,loading_repeat=2,cache='warm'),self.settings,self.model,self.root,'test')
         self.assertEqual(warm.call_count,2);clear.assert_not_called()
         self.assertEqual(info['ok'],2)
 
     def test_timeout_and_failure_do_not_become_zero_or_stop_later_repeat(self):
-        failures=[subprocess.TimeoutExpired('helper',1),subprocess.CompletedProcess([],1,'',''),subprocess.CompletedProcess([],0,'{"model_load_s":1}','')]
-        with patch('model_loading.clear_cache'),patch('model_loading.subprocess.run',side_effect=failures):
+        failures=[subprocess.TimeoutExpired('helper',1),(subprocess.CompletedProcess([],1,'',''),None),(subprocess.CompletedProcess([],0,'{"model_load_s":1}',''),1.25)]
+        with patch('model_loading.clear_cache'),patch('model_loading.run_timed_process',side_effect=failures):
             info=loading.run_loading(dict(repeat=3),self.settings,self.model,self.root,'test')
         self.assertEqual((info['ok'],info['failed']),(1,2))
         with (self.root/'model_loading.csv').open(encoding='utf-8') as f:

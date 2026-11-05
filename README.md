@@ -14,7 +14,7 @@
 
 현재는 Prefill·Decode 처리량, 준비 시간, 별도 모델 로딩 시간, Linux CPU 사용률·보고 클럭·메모리·디스크 읽기량·페이지 폴트 기록을 지원합니다. 온도, 자원 제한과 TTFT는 별도 작업입니다.
 
-모델 로드 함수 시간도 기존 명령으로 별도 측정해 model_loading.csv에 저장합니다.
+time으로 로딩 전용 프로세스 경과시간도 기존 명령으로 별도 측정해 model_loading.csv에 저장합니다.
 준비 시간은 loading.csv에 유지하며 ./summary에서 구분해서 표시합니다.
 기본 콜드 캐시·독립 반복과 최초 컴파일 요구사항은 [로딩 측정 안내](measurement/docs/model-loading.md)를 확인하세요.
 

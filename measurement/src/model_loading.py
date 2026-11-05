@@ -6,15 +6,18 @@ import math
 import os
 from pathlib import Path
 import statistics
+import signal
 import subprocess
 import sys
 import tempfile
 import urllib.request
 
 REVISION = 'f74e2fa6a'
+METHOD = 'gnu_time_load_process_v1'
+TIME = '/usr/bin/time'
 MODES = ('auto', 'none', 'mmap', 'mlock', 'mmap+mlock', 'dio')
 FIELDS = ['request_id', 'load_mode', 'cache', 'repetition', 'status', 'model_load_s',
-          'model_file_gb_per_s', 'returncode', 'error']
+          'model_file_gb_per_s', 'returncode', 'error', 'measurement_method', 'model_load_api_s']
 ROOT = Path(__file__).resolve().parent
 
 
@@ -78,7 +81,7 @@ def clear_cache(settings):
     helper = Path(settings.get('drop_caches_path', '/usr/local/bin/pp8-drop-caches'))
     if not helper.is_absolute() or not helper.is_file():
         raise RuntimeError('cold 측정에는 관리자가 등록한 캐시 비우기 명령이 필요합니다')
-    for process in ('llama-bench','llama-server','model-load'):
+    for process in ('llama-bench','llama-server','model-load','ttft-engine'):
         busy=subprocess.run(['pgrep','-x',process],capture_output=True)
         if busy.returncode != 1:
             raise RuntimeError('다른 측정이 실행 중이거나 확인할 수 없어 캐시를 비우지 않습니다')
@@ -103,6 +106,57 @@ def parse_measurement(stdout):
     return value
 
 
+
+def parse_elapsed(text):
+    prefix = 'PP8_MODEL_LOAD_ELAPSED_S='
+    values = [line[len(prefix):] for line in text.splitlines() if line.startswith(prefix)]
+    if len(values) != 1:
+        raise ValueError('time elapsed record is missing or duplicated')
+    seconds = float(values[0])
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('time elapsed must be positive and finite')
+    return seconds
+
+
+def stop_timed_process(proc):
+    # GNU time and the loading helper share a new process group. Kill both on
+    # timeout/interrupt, including a helper left behind if the wrapper exited.
+    if os.name == 'posix':
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif proc.poll() is None:
+        proc.kill()
+    proc.wait()
+
+
+def run_timed_process(command, log, timeout):
+    with tempfile.TemporaryDirectory(prefix='pp8-loading-time-') as directory, \
+         tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        elapsed_path = Path(directory)/'elapsed.txt'
+        timed = [TIME, '-f', 'PP8_MODEL_LOAD_ELAPSED_S=%e', '-o', str(elapsed_path), '--', *command]
+        log.write(json.dumps(timed)+'\n'); log.flush()
+        proc = subprocess.Popen(timed, stdout=stdout, stderr=stderr,
+                                env={**os.environ, 'LC_ALL':'C'}, start_new_session=os.name=='posix')
+        try:
+            proc.wait(timeout=timeout)
+        finally:
+            # On success time has reaped the helper. On interruption terminate
+            # the entire group before permitting another cache drop.
+            if proc.poll() is None or proc.returncode != 0:
+                stop_timed_process(proc)
+            stderr.seek(0)
+            error_text = stderr.read().decode('utf-8', errors='replace')
+            log.write(error_text)
+            elapsed = elapsed_path.read_text() if elapsed_path.exists() else ''
+            log.write(elapsed); log.flush()
+        stdout.seek(0)
+        result = subprocess.CompletedProcess(command, proc.returncode,
+                                             stdout.read().decode('utf-8',errors='replace'), error_text)
+        return result, parse_elapsed(elapsed) if result.returncode == 0 else None
+
+
 def summarize(rows):
     result = []
     groups = {}
@@ -122,8 +176,9 @@ def run_loading(req, settings, model, out_dir, request_id):
     modes = list(dict.fromkeys(req.get('load_mode',['auto'])))
     repeats = req.get('loading_repeat', req['repeat'])
     cache = req.get('cache','cold')
-    info = dict(status='disabled', definition='steady-clock time around llama_model_load_from_file only; CPU-only; excludes backend init, context, tokenization, inference and process startup',
-                mmap_note='mmap may defer reads until inference; this is model-load API latency, not time to read every weight page',
+    info = dict(status='disabled', measurement_method=METHOD, timer=TIME, timer_resolution_s=0.01,
+                definition='plan 6.1.2: GNU time elapsed of a fresh load-only process; includes process startup, backend initialization, model load and cleanup; excludes context, tokenization, warmup and inference; API-only time is diagnostic',
+                mmap_note='mmap may defer reads until inference; load-only process elapsed is not time to read every weight page',
                 cache=cache,repetitions=repeats,conditions=[])
     rows=[]
     with (Path(out_dir)/'model_loading.csv').open('w',newline='',encoding='utf-8') as output:
@@ -142,7 +197,7 @@ def run_loading(req, settings, model, out_dir, request_id):
                 error=f'{type(exc).__name__}: {exc}'
             for mode in modes:
                 for repetition in range(1,repeats+1):
-                    row=dict(request_id=request_id,load_mode=mode,cache=cache,repetition=repetition)
+                    row=dict(request_id=request_id,load_mode=mode,cache=cache,repetition=repetition,measurement_method=METHOD)
                     try:
                         if error:
                             raise RuntimeError(error)
@@ -151,16 +206,12 @@ def run_loading(req, settings, model, out_dir, request_id):
                         else:
                             warm_model(model)
                         command=[str(helper),str(model),str(libdir),mode]
-                        log.write(json.dumps(command)+'\n');log.flush()
-                        with tempfile.TemporaryFile() as stderr:
-                            result=subprocess.run(command,stdout=subprocess.PIPE,stderr=stderr,text=True,
-                                                  timeout=settings.get('model_load_timeout_seconds',300))
-                            stderr.seek(0); log.write(stderr.read().decode('utf-8',errors='replace'));log.flush()
+                        result,seconds=run_timed_process(command,log,settings.get('model_load_timeout_seconds',300))
                         if result.returncode:
                             row['returncode']=result.returncode
                             raise RuntimeError(f'model-load exited {result.returncode}')
-                        seconds=parse_measurement(result.stdout)
-                        row.update(status='ok',model_load_s=seconds,model_file_gb_per_s=Path(model).stat().st_size/1e9/seconds,returncode=0)
+                        api_seconds=parse_measurement(result.stdout)
+                        row.update(status='ok',model_load_s=seconds,model_load_api_s=api_seconds,model_file_gb_per_s=Path(model).stat().st_size/1e9/seconds,returncode=0)
                     except (OSError,ValueError,KeyError,RuntimeError,subprocess.SubprocessError) as exc:
                         row.update(status='unavailable' if error else 'failed',error=f'{type(exc).__name__}: {exc}')
                     rows.append(row);writer.writerow(row);output.flush()

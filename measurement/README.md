@@ -35,7 +35,7 @@ pp8 result 여기에_전체_요청ID
 
 ## 파일 구성
 
-[모델 로딩 시간 측정](docs/model-loading.md)은 기존 준비 시간과 별도로 model_loading.csv에 저장합니다.
+[모델 로딩 시간 측정](docs/model-loading.md)은 time으로 로딩 전용 프로세스 경과시간을 재고 기존 준비 시간과 별도로 model_loading.csv에 저장합니다.
 기본은 TPS 이후 콜드 캐시 독립 반복입니다. 기존 명령과 ./summary로 사용합니다.
 
 ```text
