@@ -89,6 +89,25 @@ def show(folder):
             print(f"  {label}: " + number(value, unit, 0) + note)
     if not items:
         print("\n기록된 측정값이 없습니다. run.log/error.txt를 확인하세요.")
+    ttft = meta.get("ttft_measurement", {})
+    if ttft.get("measurement_method") == "llama_cpp_first_eval_timing_v1":
+        print("\n[TTFT · engine timing, 로딩 제외·첫 평가]")
+        print("  Prefill + 첫 토큰 선택 | 파일 캐시 미통제 | 이전 HTTP TTFT와 직접 비교 금지")
+    else:
+        print("\n[TTFT · 준비된 모델, 로컬 HTTP 포함 (이전 방식)]")
+    if ttft.get('incomplete'):
+        label='사용자 중단' if ttft.get('status')=='interrupted' else '실패'
+        print('  TTFT 상태: '+label+' (완료된 TPS 결과는 보존됨)')
+        print('  사유: '+ttft.get('error','미기록'))
+    if ttft.get('enabled'):
+        print('  순서 섞기: '+str(ttft.get('shuffle',False))+' | seed: '+str(ttft.get('seed')))
+    if not ttft.get("conditions"):
+        print("  " + ("비활성화" if ttft.get("status") == "disabled" else "미기록"))
+    for item in ttft.get("conditions", []):
+        print(f"  입력 {item['prompt_tokens']} | 스레드 {item['threads']} | 성공 {item['ok']} / 실패 {item['failed']}")
+        print("  평균 ± 표준편차: " + number(item.get("mean_ms"), " ms") + " ± " + number(item.get("stddev_ms"), " ms") + " | CV: " + number(item.get("cv_percent"), "%"))
+    if ttft.get("failed"):
+        print("  실패 사유: ttft.csv 및 " + ("ttft-build.log / ttft-t*.log" if ttft.get("measurement_method") == "llama_cpp_first_eval_timing_v1" else "ttft-server-t*.log") + " 확인")
     loading=meta.get('model_loading',{})
     if loading.get('measurement_method') == 'gnu_time_load_process_v1':
         print('\n[모델 로딩 시간 · time 로딩 전용 프로세스]')

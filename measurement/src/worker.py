@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
+from ttft import run_ttft, validate_options, METHOD as TTFT_METHOD
 from model_loading import validate_loading, check_cold_cache_ready, run_loading, METHOD as LOADING_METHOD
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
@@ -130,6 +131,7 @@ def run_request(request_path, settings, req_id=None, on_condition_failed=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
     validate_loading(req)
+    validate_options(req,settings)
     fields=FIELDS+(['load_mode'] if 'load_mode' in req else [])
 
     bench = Path(settings["bench_path"])
@@ -289,29 +291,38 @@ def run_request(request_path, settings, req_id=None, on_condition_failed=None):
                 print(f"[{i}/{len(combos)}] {row['test']} 스레드 {row['threads']} "
                       f"{float(row['avg_ts']):.1f} ± {float(row['stddev_ts']):.1f}")
 
-    print('모델 로딩 시간 측정 중 (준비 시간과 별도, 프로세스별 독립 반복)',flush=True)
-    def loading_progress(info):
-        meta['model_loading']=info
-        write_json(out_dir / 'meta.json',meta)
+    # Run TPS -> TTFT -> load-only timing sequentially. A TTFT interrupt must
+    # never start cache clearing, and either extra phase must preserve TPS.
+    def run_extra(key,method,runner,request):
+        def progress(info):
+            meta[key]=info
+            write_json(out_dir/'meta.json',meta)
+        try:
+            meta[key]=runner(request,settings,model,out_dir,req_id,on_progress=progress)
+        except BaseException as exc:
+            info=dict(meta.get(key,{}))
+            info.update(measurement_method=method,
+                        status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
+                        error=f'{type(exc).__name__}: {exc}',incomplete=True)
+            info.setdefault('conditions',[])
+            meta[key]=info
+            if not isinstance(exc,Exception):
+                raise
 
     try:
-        meta['model_loading']=run_loading(req,settings,model,out_dir,req_id,
-                                          on_progress=loading_progress)
-    except BaseException as exc:
-        # TPS has already finished. Preserve it even for download exceptions
-        # outside the loader's normal handlers or a user interrupt in loading.
-        info=dict(meta.get('model_loading',{}))
-        info.update(measurement_method=LOADING_METHOD,
-                    status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
-                    error=f'{type(exc).__name__}: {exc}', incomplete=True)
-        info.setdefault('conditions',[])
-        meta['model_loading']=info
-        if not isinstance(exc,Exception):
-            raise  # Ctrl+C/SystemExit must still stop the caller and queue.
+        ttft_req=dict(req)
+        if req.get('shuffle'):
+            ttft_req['seed']=meta['seed']
+        if req.get('ttft',True):
+            print('엔진 timing TTFT 측정 중 (TPS 이후, 조건별 워밍업 1회 제외)',flush=True)
+        run_extra('ttft_measurement',TTFT_METHOD,run_ttft,ttft_req)
+        print('모델 로딩 시간 측정 중 (TTFT 종료 후, 프로세스별 독립 반복)',flush=True)
+        run_extra('model_loading',LOADING_METHOD,run_loading,req)
     finally:
         meta['finished']=datetime.datetime.now().isoformat(timespec='seconds')
         write_json(out_dir/'meta.json',meta)
         print('결과 폴더:',out_dir,flush=True)
+
 
 
 if __name__ == "__main__":

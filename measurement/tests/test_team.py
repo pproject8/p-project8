@@ -60,6 +60,9 @@ class TeamQueueTests(unittest.TestCase):
         meta = json.loads((self.base / "results" / ident / "meta.json").read_text())
         self.assertEqual((meta["ok"], meta["failed"]), (2, 0))
         self.assertEqual(meta["pipeline_commit"], "test-commit")
+        # Missing optional server preserves successful TPS and records TTFT failure.
+        self.assertEqual(meta["ttft_measurement"]["status"], "unavailable")
+        self.assertTrue((self.base / "results" / ident / "ttft.csv").is_file())
         self.assertIn("pp8", (self.base / "results" / ident / "results.csv").read_text())
 
     def test_partial_failure_is_visible(self):

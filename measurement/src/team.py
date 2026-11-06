@@ -12,6 +12,7 @@ import uuid
 
 import yaml
 import notify
+from ttft import validate_options
 from worker import condition_count, load_yaml, run_request
 from model_loading import validate_loading, check_cold_cache_ready
 
@@ -33,6 +34,7 @@ def validate(req, settings):
     if not isinstance(req, dict):
         raise ValueError("요청은 YAML 객체여야 합니다")
     validate_loading(req)
+    validate_options(req,settings)
     model = req.get("model")
     if not isinstance(model, str) or not model or model in (".", "..") or "/" in model or "\\" in model:
         raise ValueError("model은 models_dir 안의 파일 이름만 지정하세요")
@@ -139,7 +141,7 @@ def process_one(path, settings, base):
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         target = "failed" if meta.get("ok", 0) == 0 else "done"
     except (KeyboardInterrupt,SystemExit):
-        # Loading may be interrupted after the worker finalized its TPS data.
+        # An extra measurement may be interrupted after the worker finalized its TPS data.
         # Keep that completed request out of restart recovery, then stop the
         # queue instead of silently starting the next request after Ctrl+C.
         try:
@@ -148,8 +150,8 @@ def process_one(path, settings, base):
             meta={}
         if meta.get('finished') and meta.get('ok',0)>0:
             running.rename(base/'done'/running.name)
-            print(f"종료: {path.stem} (TPS 보존, 로딩 중단)",flush=True)
-            notify_end(settings, path.stem, outcome(base, path.stem, "done"), started, "로딩 중 워커 중단", meta)
+            print(f"종료: {path.stem} (TPS 보존, 보조 측정 중단)",flush=True)
+            notify_end(settings, path.stem, outcome(base, path.stem, "done"), started, "보조 측정 중 워커 중단", meta)
         else:
             # 종료 알림은 다음 워커 시작의 복구 단계가 한 번만 보낸다.
             notify.send(settings, f"측정 중단: {path.stem}\n워커가 멈췄습니다. 다음 워커 시작 때 failed로 정리됩니다")
