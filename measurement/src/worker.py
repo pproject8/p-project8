@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
-from model_loading import validate_loading, run_loading, METHOD as LOADING_METHOD
+from model_loading import validate_loading, check_cold_cache_ready, run_loading, METHOD as LOADING_METHOD
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -129,6 +129,7 @@ def run_request(request_path, settings, req_id=None):
     for p in (bench, model):
         if not p.exists():
             raise FileNotFoundError(f"파일을 찾을 수 없습니다: {p}")
+    check_cold_cache_ready(req, settings)
 
     started = datetime.datetime.now()
     req_id = req_id or f"{started:%Y%m%d-%H%M%S}-{req.get('name', request_path.stem)}"

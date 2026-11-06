@@ -77,10 +77,37 @@ def prepare_helper(settings, log):
                            'libllama_sha256':lib_hash, 'helper':str(helper)}
 
 
-def clear_cache(settings):
+def loading_enabled(req):
+    return req.get('measure_loading', True) and 'memory_max' not in req
+
+
+def drop_caches_helper(settings):
     helper = Path(settings.get('drop_caches_path', '/usr/local/bin/pp8-drop-caches'))
-    if not helper.is_absolute() or not helper.is_file():
-        raise RuntimeError('cold 측정에는 관리자가 등록한 캐시 비우기 명령이 필요합니다')
+    if not helper.is_absolute():
+        raise ValueError('settings의 drop_caches_path는 절대 경로여야 합니다')
+    if not helper.is_file():
+        raise ValueError('관리자가 등록한 캐시 비우기 명령이 없습니다: ' + str(helper))
+    return helper
+
+
+def check_cold_cache_ready(req, settings):
+    # 명시한 cold만 측정 전에 막는다. 기본 cold는 TPS를 지키려고 로딩 실패로만 남긴다.
+    if req.get('cache') != 'cold' or not loading_enabled(req):
+        return
+    helper = drop_caches_helper(settings)
+    try:
+        allowed = subprocess.run(['sudo', '-n', '-l', str(helper)], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        allowed = False
+    if not allowed:
+        raise ValueError('cache: cold에는 비밀번호 없이 sudo로 실행되는 캐시 비우기 명령이 필요합니다: ' + str(helper))
+
+
+def clear_cache(settings):
+    try:
+        helper = drop_caches_helper(settings)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
     for process in ('llama-bench','llama-server','model-load','ttft-engine'):
         busy=subprocess.run(['pgrep','-x',process],capture_output=True)
         if busy.returncode != 1:
@@ -191,10 +218,9 @@ def run_loading(req, settings, model, out_dir, request_id, on_progress=None):
     publish_progress()
     with (Path(out_dir)/'model_loading.csv').open('w',newline='',encoding='utf-8') as output:
         writer=csv.DictWriter(output,fieldnames=FIELDS); writer.writeheader()
-        if not req.get('measure_loading',True):
-            return info
-        if 'memory_max' in req:
-            info.update(status='disabled',reason='memory-limited model loading requires resource-runner integration; never run an unlimited helper')
+        if not loading_enabled(req):
+            if 'memory_max' in req:
+                info.update(status='disabled',reason='memory-limited model loading requires resource-runner integration; never run an unlimited helper')
             return info
         info['status']='running'
         publish_progress()
