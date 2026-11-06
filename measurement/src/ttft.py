@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import random
 from pathlib import Path
 import signal
 import statistics
@@ -18,12 +19,16 @@ ROOT = Path(__file__).resolve().parent
 FIELDS = ["request_id", "threads", "prompt_tokens", "repetition", "status",
           "ttft_ms", "first_token_id", "evaluated_tokens", "error",
           "measurement_method", "prefill_ms", "first_token_ms", "prompt_eval_ms",
-          "eval_ms", "first_token_wall_ms", "sampled_tokens", "cache", "load_mode"]
+          "eval_ms", "first_token_wall_ms", "sampled_tokens", "cache", "load_mode", "order"]
 
 
 def validate_options(req, settings):
     if type(req.get("ttft", True)) is not bool:
         raise ValueError("ttft는 true/false여야 합니다")
+    if type(req.get('shuffle',False)) is not bool:
+        raise ValueError('shuffle은 true/false여야 합니다')
+    if 'seed' in req and type(req['seed']) is not int:
+        raise ValueError('seed는 정수여야 합니다')
     for key in ("ttft_startup_timeout_seconds", "ttft_request_timeout_seconds"):
         value = settings.get(key, 300)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -154,55 +159,81 @@ def summarize(rows):
     return result
 
 
-def run_ttft(req, settings, model, out_dir, request_id):
-    validate_options(req, settings)
-    out_dir = Path(out_dir)
-    info = dict(enabled=req.get("ttft", True), measurement_method=METHOD,
-                definition="plan 6.1.2: llama.cpp timing-log prompt evaluation plus first-token sampler time; excludes model load, process/context startup, HTTP, tokenization and second-token decode",
-                cache_prompt=False, cache="uncontrolled", load_mode="auto",
-                prompt="llama-bench-style synthetic rand()%vocab token IDs, optional BOS; srand(1) per fresh process; not identical benchmark token stream",
-                repetitions="one discarded fresh-process warmup per condition, then repeat independent fresh-model/context first evaluations; gen_tokens does not multiply conditions",
-                mmap_note="first evaluation may include deferred mmap reads; OS file cache is not cleared or forced warm; not a cold-disk TTFT",
-                status="pending" if req.get("ttft", True) else "disabled", conditions=[])
-    rows = []
-    with (out_dir/"ttft.csv").open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=FIELDS); writer.writeheader()
-        if not info["enabled"]:
+def make_schedule(req):
+    def values(key):
+        value=req[key]
+        return list(dict.fromkeys(value if isinstance(value,list) else [value]))
+    jobs=[(threads,prompt,repetition)
+          for threads in values('threads') for prompt in values('prompt_tokens')
+          for repetition in range(1,req['repeat']+1)]
+    seed=None
+    if req.get('shuffle',False):
+        seed=req['seed'] if 'seed' in req else random.randrange(2**32)
+        random.Random(seed).shuffle(jobs)
+    return seed,jobs
+
+
+def run_ttft(req, settings, model, out_dir, request_id, on_progress=None):
+    validate_options(req,settings)
+    out_dir=Path(out_dir)
+    seed,jobs=make_schedule(req)
+    info=dict(enabled=req.get('ttft',True),measurement_method=METHOD,
+              definition="plan 6.1.2: llama.cpp timing-log prompt evaluation plus first-token sampler time; excludes model load, process/context startup, HTTP, tokenization and second-token decode",
+              cache_prompt=False,cache='uncontrolled',load_mode='auto',
+              prompt="llama-bench-style synthetic rand()%vocab token IDs, optional BOS; srand(1) per fresh process; not identical benchmark token stream",
+              repetitions="one discarded fresh-process warmup on first encounter of each threads/prompt condition; repeat measured fresh-model/context evaluations per condition; gen_tokens does not multiply conditions",
+              mmap_note="first evaluation may include deferred mmap reads; OS file cache is not cleared or forced warm; not a cold-disk TTFT",
+              shuffle=req.get('shuffle',False),seed=seed,
+              execution_order=[dict(order=i,threads=t,prompt_tokens=p,repetition=n) for i,(t,p,n) in enumerate(jobs,1)],
+              expected_samples=len(jobs),completed_samples=0,conditions=[],status='pending')
+    if 'memory_max' in req:
+        info.update(enabled=False,reason='memory-limited TTFT requires resource-runner integration; never run an unlimited helper')
+    info['status']='running' if info['enabled'] else 'disabled'
+    rows=[]
+    def publish_progress():
+        info['conditions']=summarize(rows)
+        ok=sum(row['status']=='ok' for row in rows)
+        info.update(ok=ok,failed=len(rows)-ok,completed_samples=len(rows))
+        if on_progress is not None:
+            on_progress(info.copy())
+    publish_progress()
+    with (out_dir/'ttft.csv').open('w',newline='',encoding='utf-8') as output:
+        writer=csv.DictWriter(output,fieldnames=FIELDS);writer.writeheader()
+        if not info['enabled']:
             return info
-        error = None
+        error=None
         try:
-            with (out_dir/"ttft-build.log").open("w", encoding="utf-8") as log:
-                helper, libdir, provenance = prepare_helper(settings, log)
+            with (out_dir/'ttft-build.log').open('w',encoding='utf-8') as log:
+                helper,libdir,provenance=prepare_helper(settings,log)
             info.update(provenance)
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-            error = f"{type(exc).__name__}: {exc}"
-        def values(key):
-            value = req[key]
-            return value if isinstance(value, list) else [value]
-        for threads in dict.fromkeys(values("threads")):
-            for prompt in dict.fromkeys(values("prompt_tokens")):
-                warmup_error = None
-                timeout = settings.get("ttft_request_timeout_seconds", 300)
-                if error is None:
-                    try:
-                        measure(helper, libdir, model, threads, prompt, timeout,
-                                out_dir/f"ttft-t{threads}-p{prompt}-warmup.log")
-                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                        warmup_error = f"warmup failed: {type(exc).__name__}: {exc}"
-                for repetition in range(1, req["repeat"] + 1):
-                    row = dict(request_id=request_id, threads=threads, prompt_tokens=prompt, repetition=repetition,
-                               measurement_method=METHOD, cache="uncontrolled", load_mode="auto")
-                    try:
-                        if error or warmup_error:
-                            raise RuntimeError(error or warmup_error)
-                        row.update(measure(helper, libdir, model, threads, prompt, timeout,
-                                           out_dir/f"ttft-t{threads}-p{prompt}-r{repetition}.log"), status="ok")
-                    except subprocess.TimeoutExpired as exc:
-                        row.update(status="timeout", error=f"TimeoutExpired: {exc}")
-                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                        row.update(status="unavailable" if error or warmup_error else "failed", error=f"{type(exc).__name__}: {exc}")
-                    rows.append(row); writer.writerow(row); output.flush()
-    info["conditions"] = summarize(rows)
-    ok = sum(row["status"] == "ok" for row in rows)
-    info.update(ok=ok, failed=len(rows)-ok, status="ok" if ok == len(rows) else "partial" if ok else "unavailable")
+            publish_progress()
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
+            error=f'{type(exc).__name__}: {exc}'
+        warmed={}
+        timeout=settings.get('ttft_request_timeout_seconds',300)
+        for order,(threads,prompt,repetition) in enumerate(jobs,1):
+            key=(threads,prompt)
+            if error is None and key not in warmed:
+                warmed[key]=None
+                try:
+                    measure(helper,libdir,model,threads,prompt,timeout,
+                            out_dir/f'ttft-t{threads}-p{prompt}-warmup.log')
+                except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
+                    warmed[key]=f'warmup failed: {type(exc).__name__}: {exc}'
+            warmup_error=warmed.get(key)
+            row=dict(request_id=request_id,threads=threads,prompt_tokens=prompt,repetition=repetition,
+                     measurement_method=METHOD,cache='uncontrolled',load_mode='auto',order=order)
+            try:
+                if error or warmup_error:
+                    raise RuntimeError(error or warmup_error)
+                row.update(measure(helper,libdir,model,threads,prompt,timeout,
+                                   out_dir/f'ttft-t{threads}-p{prompt}-r{repetition}.log'),status='ok')
+            except subprocess.TimeoutExpired as exc:
+                row.update(status='timeout',error=f'TimeoutExpired: {exc}')
+            except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as exc:
+                row.update(status='unavailable' if error or warmup_error else 'failed',error=f'{type(exc).__name__}: {exc}')
+            rows.append(row);writer.writerow(row);output.flush()
+            publish_progress()
+    ok=sum(row['status']=='ok' for row in rows)
+    info.update(status='ok' if ok==len(rows) else 'partial' if ok else 'unavailable')
     return info

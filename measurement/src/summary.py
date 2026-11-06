@@ -64,6 +64,8 @@ def show(folder):
         threads = row.get("threads", condition.get("threads", "미기록"))
         repeat = row.get("repeat", condition.get("repeat", "미기록"))
         print(f"\n[{test}] 스레드 {threads} | 내부 반복 {repeat}")
+        if row.get('load_mode'):
+            print('  모델 읽기 방식      : '+row['load_mode'])
         if row:
             print("  TPS 평균 ± 표준편차 : " + number(row.get("avg_ts")) + " ± " + number(row.get("stddev_ts")))
         else:
@@ -93,6 +95,12 @@ def show(folder):
         print("  Prefill + 첫 토큰 선택 | 파일 캐시 미통제 | 이전 HTTP TTFT와 직접 비교 금지")
     else:
         print("\n[TTFT · 준비된 모델, 로컬 HTTP 포함 (이전 방식)]")
+    if ttft.get('incomplete'):
+        label='사용자 중단' if ttft.get('status')=='interrupted' else '실패'
+        print('  TTFT 상태: '+label+' (완료된 TPS 결과는 보존됨)')
+        print('  사유: '+ttft.get('error','미기록'))
+    if ttft.get('enabled'):
+        print('  순서 섞기: '+str(ttft.get('shuffle',False))+' | seed: '+str(ttft.get('seed')))
     if not ttft.get("conditions"):
         print("  " + ("비활성화" if ttft.get("status") == "disabled" else "미기록"))
     for item in ttft.get("conditions", []):
@@ -100,7 +108,27 @@ def show(folder):
         print("  평균 ± 표준편차: " + number(item.get("mean_ms"), " ms") + " ± " + number(item.get("stddev_ms"), " ms") + " | CV: " + number(item.get("cv_percent"), "%"))
     if ttft.get("failed"):
         print("  실패 사유: ttft.csv 및 " + ("ttft-build.log / ttft-t*.log" if ttft.get("measurement_method") == "llama_cpp_first_eval_timing_v1" else "ttft-server-t*.log") + " 확인")
+    loading=meta.get('model_loading',{})
+    if loading.get('measurement_method') == 'gnu_time_load_process_v1':
+        print('\n[모델 로딩 시간 · time 로딩 전용 프로세스]')
+        print('  시작·백엔드·모델 로드·종료 포함 | time 해상도 0.01초 | 이전 API 시간과 직접 비교 금지')
+    else:
+        print('\n[모델 로딩 시간 · 로드 함수 호출→반환 (이전 방식)]')
+    if loading.get('incomplete'):
+        label='사용자 중단' if loading.get('status')=='interrupted' else '실패'
+        print('  로딩 상태: '+label+' (완료된 TPS 결과는 보존됨)')
+        print('  사유: '+loading.get('error','미기록'))
+        if 'completed_samples' in loading:
+            print(f"  완료된 로딩 표본: {loading['completed_samples']} / {loading.get('expected_samples','미기록')} (아래 통계는 완료 표본만)")
+    if not loading.get('conditions'):
+        print('  '+('비활성화' if loading.get('status')=='disabled' else '미기록'))
+    for item in loading.get('conditions',[]):
+        print(f"  읽기 {item['load_mode']} | 캐시 {item['cache']} | 성공 {item['ok']} / 실패 {item['failed']}")
+        print('  평균 ± 표준편차: '+number(item.get('mean_s'),'초',3)+' ± '+number(item.get('stddev_s'),'초',3)+' | CV: '+number(item.get('cv_percent'),'%'))
+    if loading.get('failed'):
+        print('  실패 사유: model_loading.csv / model-loading.log 확인')
     print("\n참고: 준비 시간은 워밍업 직전까지입니다. 클럭은 허용 CPU의 보고값 평균입니다.")
+    print('새 로딩 시간은 프로세스 초기화·정리를 포함하고 추론은 제외합니다. mmap의 지연 읽기는 이후 추론으로 넘어갈 수 있습니다.')
     print("RSS 최대는 관측값이며 순간 피크를 놓칠 수 있습니다. read 계열 읽기량은 mmap 접근 전체가 아닙니다.")
     return 0
 

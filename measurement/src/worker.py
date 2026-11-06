@@ -13,7 +13,8 @@ from pathlib import Path
 
 import yaml
 from cpu_monitor import MONITOR_FIELDS, run_monitored
-from ttft import run_ttft, validate_options
+from ttft import run_ttft, validate_options, METHOD as TTFT_METHOD
+from model_loading import validate_loading, check_cold_cache_ready, run_loading, METHOD as LOADING_METHOD
 
 LOADING_FIELDS = ["request_id", "order", "test", "threads", "repeat", "status",
                   "startup_to_warmup_s", "lower_bound_s", "upper_bound_s"]
@@ -29,6 +30,14 @@ def load_yaml(path):
 
 def as_list(x):
     return x if isinstance(x, list) else [x]
+
+
+def build_combos(req):
+    return [(p,n,t,mode) for p,n,t in make_combos(req) for mode in req.get('load_mode',['auto'])]
+
+
+def condition_count(req):
+    return len(build_combos(req))
 
 
 def make_combos(req):
@@ -108,9 +117,9 @@ def parse_rows(stdout, req_id, repeat, order):
     return rows
 
 
-def append_rows(path, rows):
+def append_rows(path, rows, fields=FIELDS):
     with open(path, "a", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writerows(rows)
+        csv.DictWriter(f, fieldnames=fields).writerows(rows)
 
 
 def write_json(path, data):
@@ -118,16 +127,19 @@ def write_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def run_request(request_path, settings, req_id=None):
+def run_request(request_path, settings, req_id=None, on_condition_failed=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
-    validate_options(req, settings)
+    validate_loading(req)
+    validate_options(req,settings)
+    fields=FIELDS+(['load_mode'] if 'load_mode' in req else [])
 
     bench = Path(settings["bench_path"])
     model = Path(settings["models_dir"]) / req["model"]
     for p in (bench, model):
         if not p.exists():
             raise FileNotFoundError(f"파일을 찾을 수 없습니다: {p}")
+    check_cold_cache_ready(req, settings)
 
     started = datetime.datetime.now()
     req_id = req_id or f"{started:%Y%m%d-%H%M%S}-{req.get('name', request_path.stem)}"
@@ -137,7 +149,7 @@ def run_request(request_path, settings, req_id=None):
     shutil.copy(request_path, out_dir / "request.yaml")
     results_csv = out_dir / "results.csv"
     with open(results_csv, "w", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=FIELDS).writeheader()
+        csv.DictWriter(f, fieldnames=fields).writeheader()
     monitor_csv = out_dir / "monitor.csv"
     with monitor_csv.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=MONITOR_FIELDS).writeheader()
@@ -212,17 +224,24 @@ def run_request(request_path, settings, req_id=None):
     }
     write_json(out_dir / "meta.json", meta)
 
-    combos = make_combos(req)
+    combos = build_combos(req)
     if req.get("shuffle"):
         meta["seed"] = req.get("seed", random.randrange(2 ** 32))
         random.Random(meta["seed"]).shuffle(combos)
     write_json(out_dir / "meta.json", meta)
     print(f"요청 {req_id}: 총 {len(combos)}개 조건")
 
+    def report_failure(context, mode, reason):
+        if on_condition_failed:
+            on_condition_failed({**context, "total": len(combos), "reason": reason,
+                                 "load_mode": mode if 'load_mode' in req else None})
+
     with open(out_dir / "run.log", "w", encoding="utf-8") as log:
-        for i, (p, n, t) in enumerate(combos, 1):
+        for i, (p, n, t, mode) in enumerate(combos, 1):
             cmd = [str(bench), "-m", str(model), "-p", str(p), "-n", str(n),
                    "-t", str(t), "-r", str(req["repeat"]), "-o", "csv", "--progress"]
+            if 'load_mode' in req:
+                cmd.extend(['-lm',mode])
             log.write(f"[{i}/{len(combos)}] {' '.join(cmd)}\n")
             context = {"request_id": req_id, "order": i,
                        "test": f"pp{p}" if n == 0 else f"tg{n}",
@@ -241,6 +260,7 @@ def run_request(request_path, settings, req_id=None):
                 log.write("  실패: 조건 실행 시간 초과\n")
                 log.flush()
                 write_json(out_dir / "meta.json", meta)
+                report_failure(context, mode, "시간 초과")
                 continue
             summary = getattr(result, "monitor_summary", {**context, "status": "unavailable", "samples": 0})
             meta["cpu_monitor"]["conditions"].append(summary)
@@ -258,10 +278,11 @@ def run_request(request_path, settings, req_id=None):
                 log.flush()
                 print(f"[{i}/{len(combos)}] 실패: p={p} n={n} t={t}")
                 write_json(out_dir / "meta.json", meta)
+                report_failure(context, mode, f"종료 코드 {result.returncode}")
                 continue
 
             rows = parse_rows(result.stdout, req_id, req["repeat"], i)
-            append_rows(results_csv, rows)
+            append_rows(results_csv, [{**row,**({'load_mode':mode} if 'load_mode' in req else {})} for row in rows],fields)
             meta["ok"] += 1
             write_json(out_dir / "meta.json", meta)
             log.write("  성공\n")
@@ -270,13 +291,38 @@ def run_request(request_path, settings, req_id=None):
                 print(f"[{i}/{len(combos)}] {row['test']} 스레드 {row['threads']} "
                       f"{float(row['avg_ts']):.1f} ± {float(row['stddev_ts']):.1f}")
 
-    # Separate inference engine run after all TPS measurements; never overlap them.
-    if req.get("ttft", True):
-        print("엔진 timing TTFT 측정 중 (로딩 제외·첫 평가, 조건별 워밍업 1회 제외)", flush=True)
-    meta["ttft_measurement"] = run_ttft(req, settings, model, out_dir, req_id)
-    meta["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
-    write_json(out_dir / "meta.json", meta)
-    print("결과 폴더:", out_dir)
+    # Run TPS -> TTFT -> load-only timing sequentially. A TTFT interrupt must
+    # never start cache clearing, and either extra phase must preserve TPS.
+    def run_extra(key,method,runner,request):
+        def progress(info):
+            meta[key]=info
+            write_json(out_dir/'meta.json',meta)
+        try:
+            meta[key]=runner(request,settings,model,out_dir,req_id,on_progress=progress)
+        except BaseException as exc:
+            info=dict(meta.get(key,{}))
+            info.update(measurement_method=method,
+                        status='interrupted' if isinstance(exc,KeyboardInterrupt) else 'failed',
+                        error=f'{type(exc).__name__}: {exc}',incomplete=True)
+            info.setdefault('conditions',[])
+            meta[key]=info
+            if not isinstance(exc,Exception):
+                raise
+
+    try:
+        ttft_req=dict(req)
+        if req.get('shuffle'):
+            ttft_req['seed']=meta['seed']
+        if req.get('ttft',True):
+            print('엔진 timing TTFT 측정 중 (TPS 이후, 조건별 워밍업 1회 제외)',flush=True)
+        run_extra('ttft_measurement',TTFT_METHOD,run_ttft,ttft_req)
+        print('모델 로딩 시간 측정 중 (TTFT 종료 후, 프로세스별 독립 반복)',flush=True)
+        run_extra('model_loading',LOADING_METHOD,run_loading,req)
+    finally:
+        meta['finished']=datetime.datetime.now().isoformat(timespec='seconds')
+        write_json(out_dir/'meta.json',meta)
+        print('결과 폴더:',out_dir,flush=True)
+
 
 
 if __name__ == "__main__":

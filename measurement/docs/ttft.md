@@ -20,7 +20,7 @@ OS 파일 캐시는 비우거나 강제로 데우지 않습니다(`cache=uncontr
 
 기획서 4.3, 6.1.1의 llama-bench 방식에 맞춰 `rand() % vocab_size`와 필요시 BOS를 사용한 합성 정수 토큰을 정확히 `prompt_tokens`개 만듭니다. 매 프로세스 `srand(1)`로 고정합니다. llama-bench의 난수 진행 상태와 완전히 같은 토큰열을 보장하지는 않습니다. 실제 문장이나 답변 품질을 평가하지 않습니다.
 
-`threads`와 `prompt_tokens` 조합마다 측정하며 `gen_tokens`는 조건 수를 늘리지 않습니다. 생성은 항상 첫 토큰 하나입니다. `repeat`는 각 조건의 기록 횟수입니다. TTFT는 YAML 순서로 실행하며 기존 TPS의 `shuffle`, `seed`는 TTFT 순서를 바꾸지 않습니다. 논리 batch는 입력 길이, microbatch는 512, context는 입력 길이+32, CPU 스레드는 배치와 생성에 동일 적용합니다. TPS와 batch 설정까지 동일하다고 간주하지 않습니다.
+`threads`와 `prompt_tokens` 조합마다 측정하며 `gen_tokens`는 조건 수를 늘리지 않습니다. 생성은 항상 첫 토큰 하나입니다. `repeat`는 각 조건의 기록 횟수입니다. `shuffle: true`이면 threads·prompt_tokens·repetition의 전체 기록 표본을 섞어 입력 길이별 반복이 한 덩어리로 고정되지 않게 합니다. 첫 등장한 조건마다 워밍업 1회를 바로 앞에서 수행하고 기록에서 제외합니다. 같은 seed와 조건이면 같은 TTFT 순서를 재현합니다. seed를 생략한 worker 실행은 TPS에 기록한 실제 seed를 TTFT에도 사용합니다. shuffle을 끄면 YAML 조건 순서와 반복 순서를 유지합니다. CSV의 order는 실제 기록 순서이며 repetition은 조건 내 표본 식별자여서 r2가 r1보다 먼저 실행될 수 있습니다. meta.json에는 shuffle, seed, 계획된 execution_order와 completed_samples를 저장합니다. 순서 섞기가 발열·캐시 영향을 완전히 제거하는 것은 아닙니다. 논리 batch는 입력 길이, microbatch는 512, context는 입력 길이+32, CPU 스레드는 배치와 생성에 동일 적용합니다. TPS와 batch 설정까지 동일하다고 간주하지 않습니다.
 
 ## 환경과 실패
 
@@ -28,11 +28,11 @@ OS 파일 캐시는 비우거나 강제로 데우지 않습니다(`cache=uncontr
 
 `ttft_request_timeout_seconds`는 모델 로드부터 첫 토큰 측정까지 한 프로세스의 제한 시간입니다(기본 300초). 기존 `server_path`, `ttft_startup_timeout_seconds`는 더 이상 사용하지 않습니다. 이전 설정 파일에 남아 있어도 실행 명령을 바꿀 필요는 없습니다.
 
-빌드나 설치 실패는 `unavailable`, 반복 중 실패는 `failed`, 제한 시간 초과는 `timeout`으로 남깁니다. 값은 빈칸이며 0ms로 채우지 않습니다. timeout과 Ctrl+C 시 자식 프로세스를 정리합니다. TTFT 실패는 기존 TPS 성공 여부와 별도입니다. `monitor.csv`도 기존 TPS 프로세스용이며 TTFT 자원 사용량은 포함하지 않습니다.
+빌드나 설치 실패는 `unavailable`, 반복 중 실패는 `failed`, 제한 시간 초과는 `timeout`으로 남깁니다. 값은 빈칸이며 0ms로 채우지 않습니다. timeout과 Ctrl+C 시 자식 프로세스를 정리합니다. TTFT 실패는 기존 TPS 성공 여부와 별도입니다. 실행 순서는 TPS → TTFT → 별도 모델 로딩이며, TTFT 프로세스가 끝난 후에만 로딩용 캐시 비우기를 시작합니다. 예상하지 못한 TTFT 오류도 별도로 기록하고 TPS 조회를 보존합니다. Ctrl+C는 완료된 TPS와 TTFT 표본을 저장한 뒤 전달하여 로딩·다음 큐 요청을 시작하지 않습니다. 메모리 제한 요청에서는 무제한 TTFT 도구를 실행하지 않고 비활성화합니다. 명시적 load_mode는 기존 TPS·별도 로딩 축이며 TTFT는 별도 auto 방식으로만 기록합니다. `monitor.csv`도 기존 TPS 프로세스용이며 TTFT 자원 사용량은 포함하지 않습니다.
 
 ## 파일과 요약
 
-- `ttft.csv`: 기존 열을 유지하고 측정 방법, Prefill, 첫 토큰 선택, wall time과 캐시·읽기 방식 열을 추가합니다.
+- `ttft.csv`: 기존 열을 유지하고 측정 방법, Prefill, 첫 토큰 선택, wall time과 캐시·읽기 방식·실제 실행 order 열을 추가합니다.
 - `ttft-t{threads}-p{prompt}-r{repetition}.log`: 반복별 엔진 timing 원문.
 - `ttft-t{threads}-p{prompt}-warmup.log`: 평균에서 제외한 워밍업.
 - `ttft-build.log`: 빌드 실패 확인용.
