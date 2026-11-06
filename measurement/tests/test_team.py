@@ -149,6 +149,37 @@ class TeamQueueTests(unittest.TestCase):
         self.assertIn("결과: failed", send.call_args_list[0].args[1])
         self.assertIn(ident, send.call_args_list[0].args[1])
 
+    def test_risk_notices_stop_at_limit_and_end_notice_counts_failures(self):
+        self.settings["discord_webhook_url"] = "https://discord.test/hook"
+        args = argparse.Namespace(request="baseline", model=None, threads=[1, 2, 4],
+                                  repeat=1, prompt_tokens=[8], gen_tokens=[4])
+        with contextlib.redirect_stdout(io.StringIO()):
+            ident = team.submit(args, self.settings, self.base)
+        sent = []
+        with patch("worker.run_monitored", side_effect=lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 1, "", "bad")), \
+                patch("notify.send", side_effect=lambda settings, text: sent.append(text)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        self.assertEqual(sum(m.startswith("위험 신호") for m in sent), team.RISK_NOTICE_LIMIT)
+        self.assertIn("실패 조건: 6개", sent[-1])
+
+    def test_risk_notice_names_load_mode(self):
+        notices = []
+        with patch("notify.send", side_effect=lambda settings, text: notices.append(text)):
+            team.risk_notifier({}, "req")(dict(order=2, total=4, test="tg4", threads=1, reason="시간 초과", load_mode="dio"))
+        self.assertIn("스레드 1 dio 실패 (시간 초과)", notices[0])
+
+    def test_interrupt_before_finish_defers_end_notice_to_recovery(self):
+        ident = self.submit()
+        sent = []
+        with patch("team.run_request", side_effect=KeyboardInterrupt), \
+                patch("notify.send", side_effect=lambda settings, text: sent.append(text)), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        self.assertTrue(sent[-1].startswith("측정 중단"))
+        self.assertFalse(any(m.startswith("측정 종료") for m in sent))
+        self.assertTrue((self.base / "running" / (ident + ".yaml")).is_file())
+
     def test_no_webhook_setting_sends_nothing(self):
         ident = self.submit()
         with patch("worker.run_monitored", side_effect=self.success), \

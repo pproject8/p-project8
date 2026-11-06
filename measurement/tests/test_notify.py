@@ -18,6 +18,7 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.get_header("User-agent"), "pp8-worker")
         self.assertEqual(len(json.loads(request.data)["content"]), 2000)
+        self.assertEqual(json.loads(request.data)["allowed_mentions"], {"parse": []})
 
     def test_error_log_hides_webhook_url(self):
         url = "https://discord.test/hook/secret-token"

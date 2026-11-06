@@ -10,7 +10,8 @@ def send(settings, content):
     url = settings.get("discord_webhook_url")
     if not url:
         return False
-    body = json.dumps({"content": content[:LIMIT]}).encode("utf-8")
+    # 요청 YAML과 예외 문구가 그대로 들어가므로 @everyone 같은 멘션을 막는다.
+    body = json.dumps({"content": content[:LIMIT], "allowed_mentions": {"parse": []}}).encode("utf-8")
     # Discord rejects urllib's default User-Agent.
     request = urllib.request.Request(url, data=body, method="POST",
                                      headers={"Content-Type": "application/json", "User-Agent": "pp8-worker"})
