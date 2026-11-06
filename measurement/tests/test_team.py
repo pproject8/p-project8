@@ -87,6 +87,12 @@ class TeamQueueTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             team.check_id("../private")
 
+    def test_submit_rejects_explicit_cold_without_drop_helper(self):
+        req = dict(model="model.gguf", repeat=1, threads=[1], prompt_tokens=[8], gen_tokens=[4], cache="cold")
+        settings = {**self.settings, "drop_caches_path": str(self.base / "missing")}
+        with self.assertRaisesRegex(ValueError, "캐시 비우기"):
+            team.validate(req, settings)
+
     @unittest.skipUnless(sys.platform == "linux", "Linux flock")
     def test_second_worker_cannot_recover_running_request(self):
         import fcntl

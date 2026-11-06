@@ -12,7 +12,7 @@ import uuid
 
 import yaml
 from worker import load_yaml, run_request
-from model_loading import validate_loading
+from model_loading import validate_loading, check_cold_cache_ready
 
 ROOT = Path(__file__).resolve().parents[1]
 STATES = ("queue", "running", "done", "failed")
@@ -48,6 +48,7 @@ def validate(req, settings):
         raise ValueError("shuffle은 true/false로 지정하세요")
     if "seed" in req and type(req["seed"]) is not int:
         raise ValueError("seed는 정수여야 합니다")
+    check_cold_cache_ready(req, settings)
 
 
 def submit(args, settings, base):

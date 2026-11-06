@@ -140,9 +140,18 @@ class LoadingTests(unittest.TestCase):
     def test_cold_helper_check_skips_default_warm_and_disabled_loading(self):
         settings={'drop_caches_path':str(self.root/'missing')}
         for req in ({},{'cache':'warm'},{'cache':'cold','measure_loading':False},{'cache':'cold','memory_max':'1G'}):
-            with self.subTest(req=req):
+            with self.subTest(req=req),patch('model_loading.subprocess.run') as run:
                 loading.check_cold_cache_ready(req,settings)
-        loading.check_cold_cache_ready({'cache':'cold'},{'drop_caches_path':str(self.model)})
+                run.assert_not_called()
 
+    def test_explicit_cold_requires_absolute_helper_allowed_by_sudo(self):
+        req={'cache':'cold'}
+        with self.assertRaisesRegex(ValueError,'절대 경로'):
+            loading.check_cold_cache_ready(req,{'drop_caches_path':'bin/pp8-drop-caches'})
+        with patch('model_loading.subprocess.run',return_value=subprocess.CompletedProcess([],1)),self.assertRaisesRegex(ValueError,'sudo'):
+            loading.check_cold_cache_ready(req,{'drop_caches_path':str(self.model)})
+        with patch('model_loading.subprocess.run',return_value=subprocess.CompletedProcess([],0)) as run:
+            loading.check_cold_cache_ready(req,{'drop_caches_path':str(self.model)})
+        self.assertEqual(run.call_args.args[0],['sudo','-n','-l',str(self.model)])
 
 if __name__=='__main__':unittest.main()
