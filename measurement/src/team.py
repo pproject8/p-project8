@@ -11,7 +11,8 @@ import time
 import uuid
 
 import yaml
-from worker import load_yaml, run_request
+import notify
+from worker import condition_count, load_yaml, run_request
 from model_loading import validate_loading, check_cold_cache_ready
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,9 +128,15 @@ def process_one(path, settings, base):
     path.rename(running)
     folder = base / "results" / path.stem
     print(f"시작: {path.stem}", flush=True)
+    started = time.monotonic()
+    error = None
     try:
-        validate(load_yaml(running), settings)
-        run_request(running, settings, req_id=path.stem)
+        req = load_yaml(running)
+        validate(req, settings)
+        notify.send(settings, f"측정 시작: {path.stem}\n제출자: {req.get('submitted_by', '알 수 없음')}"
+                              f"\n조건: {condition_count(req)}개 × 반복 {req['repeat']}회")
+        run_request(running, settings, req_id=path.stem, on_condition_failed=lambda c: notify.send(
+            settings, f"위험 신호: {path.stem}\n조건 {c['order']}/{c['total']} {c['test']} 스레드 {c['threads']} 실패 ({c['reason']})"))
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         target = "failed" if meta.get("ok", 0) == 0 else "done"
     except (KeyboardInterrupt,SystemExit):
@@ -143,13 +150,25 @@ def process_one(path, settings, base):
         if meta.get('finished') and meta.get('ok',0)>0:
             running.rename(base/'done'/running.name)
             print(f"종료: {path.stem} (TPS 보존, 로딩 중단)",flush=True)
+            notify_end(settings, path.stem, outcome(base, path.stem, "done"), started, "로딩 중 워커 중단")
+        else:
+            notify_end(settings, path.stem, "failed", started, "워커 중단")
         raise
     except Exception as exc:
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "error.txt").write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        error = f"{type(exc).__name__}: {exc}"
+        (folder / "error.txt").write_text(error + "\n", encoding="utf-8")
         target = "failed"
     running.rename(base / target / running.name)
-    print(f"종료: {path.stem} ({outcome(base, path.stem, target)})", flush=True)
+    state = outcome(base, path.stem, target)
+    print(f"종료: {path.stem} ({state})", flush=True)
+    notify_end(settings, path.stem, state, started, error)
+
+
+def notify_end(settings, ident, state, started, note=None):
+    minutes, seconds = divmod(int(time.monotonic() - started), 60)
+    notify.send(settings, f"측정 종료: {ident}\n결과: {state}\n소요 시간: {minutes}분 {seconds}초"
+                          + (f"\n사유: {note}" if note else ""))
 
 
 def worker(settings, base, once=False):
@@ -167,6 +186,7 @@ def worker(settings, base, once=False):
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "error.txt").write_text("워커 중단 후 복구됨. 새 요청으로 다시 제출하세요.\n", encoding="utf-8")
             path.rename(base / "failed" / path.name)
+            notify.send(settings, f"측정 종료: {path.stem}\n결과: failed\n사유: 워커 중단 후 복구됨. 다시 제출하세요")
         print("공용 워커 대기 중 (종료: Ctrl+C)", flush=True)
         while True:
             requests = sorted((base / "queue").glob("*.yaml"))

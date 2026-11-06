@@ -31,6 +31,10 @@ def as_list(x):
     return x if isinstance(x, list) else [x]
 
 
+def condition_count(req):
+    return len(make_combos(req)) * len(req.get('load_mode', ['auto']))
+
+
 def make_combos(req):
     combos = []
     for t in as_list(req["threads"]):
@@ -118,7 +122,7 @@ def write_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def run_request(request_path, settings, req_id=None):
+def run_request(request_path, settings, req_id=None, on_condition_failed=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
     validate_loading(req)
@@ -243,6 +247,8 @@ def run_request(request_path, settings, req_id=None):
                     log.write(exc.stderr)
                 meta["failed"] += 1
                 log.write("  실패: 조건 실행 시간 초과\n")
+                if on_condition_failed:
+                    on_condition_failed({**context, "total": len(combos), "reason": "시간 초과"})
                 log.flush()
                 write_json(out_dir / "meta.json", meta)
                 continue
@@ -261,6 +267,8 @@ def run_request(request_path, settings, req_id=None):
                 log.write(f"  실패 (종료 코드 {result.returncode})\n{result.stderr}\n")
                 log.flush()
                 print(f"[{i}/{len(combos)}] 실패: p={p} n={n} t={t}")
+                if on_condition_failed:
+                    on_condition_failed({**context, "total": len(combos), "reason": f"종료 코드 {result.returncode}"})
                 write_json(out_dir / "meta.json", meta)
                 continue
 
