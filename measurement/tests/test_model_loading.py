@@ -127,4 +127,22 @@ class LoadingTests(unittest.TestCase):
             self.assertEqual([r['load_mode'] for r in csv.DictReader(f)],['mmap','none','mmap','none'])
 
 
+    def test_explicit_cold_without_drop_helper_fails_before_benchmark(self):
+        (self.root/'bench').touch()
+        request=self.root/'request.yaml'
+        request.write_text(yaml.safe_dump(dict(model=self.model.name,threads=[1],prompt_tokens=[8],gen_tokens=[4],repeat=1,cache='cold')))
+        settings={**self.settings,'models_dir':str(self.root),'drop_caches_path':str(self.root/'missing')}
+        with patch('worker.run_monitored') as bench,self.assertRaisesRegex(ValueError,'캐시 비우기'):
+            worker.run_request(request,settings,'test')
+        bench.assert_not_called()
+        self.assertFalse((self.root/'results/test').exists())
+
+    def test_cold_helper_check_skips_default_warm_and_disabled_loading(self):
+        settings={'drop_caches_path':str(self.root/'missing')}
+        for req in ({},{'cache':'warm'},{'cache':'cold','measure_loading':False},{'cache':'cold','memory_max':'1G'}):
+            with self.subTest(req=req):
+                loading.check_cold_cache_ready(req,settings)
+        loading.check_cold_cache_ready({'cache':'cold'},{'drop_caches_path':str(self.model)})
+
+
 if __name__=='__main__':unittest.main()

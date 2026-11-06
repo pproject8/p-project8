@@ -77,9 +77,22 @@ def prepare_helper(settings, log):
                            'libllama_sha256':lib_hash, 'helper':str(helper)}
 
 
-def clear_cache(settings):
+def drop_caches_helper(settings):
     helper = Path(settings.get('drop_caches_path', '/usr/local/bin/pp8-drop-caches'))
-    if not helper.is_absolute() or not helper.is_file():
+    return helper if helper.is_absolute() and helper.is_file() else None
+
+
+def check_cold_cache_ready(req, settings):
+    # 명시한 cold만 측정 전에 막는다. 기본 cold는 TPS를 지키려고 로딩 실패로만 남긴다.
+    if req.get('cache') != 'cold' or not req.get('measure_loading', True) or 'memory_max' in req:
+        return
+    if drop_caches_helper(settings) is None:
+        raise ValueError('cache: cold에는 관리자가 등록한 캐시 비우기 명령이 필요합니다')
+
+
+def clear_cache(settings):
+    helper = drop_caches_helper(settings)
+    if helper is None:
         raise RuntimeError('cold 측정에는 관리자가 등록한 캐시 비우기 명령이 필요합니다')
     for process in ('llama-bench','llama-server','model-load','ttft-engine'):
         busy=subprocess.run(['pgrep','-x',process],capture_output=True)
