@@ -11,7 +11,8 @@ import time
 import uuid
 
 import yaml
-from worker import load_yaml, run_request
+import notify
+from worker import condition_count, load_yaml, run_request
 from model_loading import validate_loading, check_cold_cache_ready
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,9 +128,14 @@ def process_one(path, settings, base):
     path.rename(running)
     folder = base / "results" / path.stem
     print(f"시작: {path.stem}", flush=True)
+    started = time.monotonic()
+    error = None
     try:
-        validate(load_yaml(running), settings)
-        run_request(running, settings, req_id=path.stem)
+        req = load_yaml(running)
+        validate(req, settings)
+        notify.send(settings, f"측정 시작: {path.stem}\n제출자: {req.get('submitted_by', '알 수 없음')}"
+                              f"\n조건: {condition_count(req)}개 × 반복 {req['repeat']}회")
+        run_request(running, settings, req_id=path.stem, on_condition_failed=risk_notifier(settings, path.stem))
         meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         target = "failed" if meta.get("ok", 0) == 0 else "done"
     except (KeyboardInterrupt,SystemExit):
@@ -143,13 +149,53 @@ def process_one(path, settings, base):
         if meta.get('finished') and meta.get('ok',0)>0:
             running.rename(base/'done'/running.name)
             print(f"종료: {path.stem} (TPS 보존, 로딩 중단)",flush=True)
+            notify_end(settings, path.stem, outcome(base, path.stem, "done"), started, "로딩 중 워커 중단", meta)
+        else:
+            # 종료 알림은 다음 워커 시작의 복구 단계가 한 번만 보낸다.
+            notify.send(settings, f"측정 중단: {path.stem}\n워커가 멈췄습니다. 다음 워커 시작 때 failed로 정리됩니다")
         raise
     except Exception as exc:
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "error.txt").write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        error = f"{type(exc).__name__}: {exc}"
+        (folder / "error.txt").write_text(error + "\n", encoding="utf-8")
         target = "failed"
     running.rename(base / target / running.name)
-    print(f"종료: {path.stem} ({outcome(base, path.stem, target)})", flush=True)
+    state = outcome(base, path.stem, target)
+    print(f"종료: {path.stem} ({state})", flush=True)
+    try:
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    notify_end(settings, path.stem, state, started, error, meta)
+
+
+RISK_NOTICE_LIMIT = 3  # 조건이 연달아 실패해도 디스코드 속도 제한에 종료 알림이 막히지 않게 한다
+
+
+def risk_notifier(settings, ident):
+    sent = 0
+    def send(c):
+        nonlocal sent
+        sent += 1
+        if sent > RISK_NOTICE_LIMIT:
+            return
+        mode = f" {c['load_mode']}" if c.get("load_mode") else ""
+        tail = "\n이후 실패는 종료 알림에 개수로 알립니다" if sent == RISK_NOTICE_LIMIT else ""
+        notify.send(settings, f"위험 신호: {ident}\n조건 {c['order']}/{c['total']} {c['test']} 스레드 {c['threads']}{mode}"
+                              f" 실패 ({c['reason']}){tail}")
+    return send
+
+
+def notify_end(settings, ident, state, started=None, note=None, meta=None):
+    lines = [f"측정 종료: {ident}", f"결과: {state}"]
+    if started is not None:
+        minutes, seconds = divmod(int(time.monotonic() - started), 60)
+        lines.append(f"소요 시간: {minutes}분 {seconds}초")
+    if meta and meta.get("failed"):
+        lines.append(f"실패 조건: {meta['failed']}개 / 성공 {meta.get('ok', 0)}개")
+    if note:
+        lines.append(f"사유: {note}")
+    notify.send(settings, "\n".join(lines))
 
 
 def worker(settings, base, once=False):
@@ -167,6 +213,7 @@ def worker(settings, base, once=False):
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "error.txt").write_text("워커 중단 후 복구됨. 새 요청으로 다시 제출하세요.\n", encoding="utf-8")
             path.rename(base / "failed" / path.name)
+            notify_end(settings, path.stem, "failed", note="워커 중단 후 복구됨. 다시 제출하세요")
         print("공용 워커 대기 중 (종료: Ctrl+C)", flush=True)
         while True:
             requests = sorted((base / "queue").glob("*.yaml"))

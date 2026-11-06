@@ -93,6 +93,100 @@ class TeamQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "캐시 비우기"):
             team.validate(req, settings)
 
+    def run_with_webhook(self, bench, urlopen=None):
+        self.settings["discord_webhook_url"] = "https://discord.test/hook"
+        ident = self.submit()
+        sent = []
+        def fake(request, timeout):
+            sent.append(json.loads(request.data)["content"])
+            return contextlib.nullcontext()
+        with patch("worker.run_monitored", side_effect=bench), \
+                patch("notify.urllib.request.urlopen", side_effect=urlopen or fake), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        return ident, sent
+
+    def test_webhook_gets_start_and_end_with_outcome_and_elapsed(self):
+        ident, sent = self.run_with_webhook(self.success)
+        self.assertEqual(len(sent), 2)
+        self.assertIn(ident, sent[0]); self.assertIn("제출자:", sent[0]); self.assertIn("조건: 2개", sent[0])
+        self.assertIn("결과: done", sent[1]); self.assertIn("소요 시간:", sent[1])
+
+    def test_webhook_gets_risk_signal_for_failed_and_timed_out_conditions(self):
+        calls = iter(["fail", "timeout"])
+        def bench(cmd, *args, **kwargs):
+            if next(calls) == "fail":
+                return subprocess.CompletedProcess(cmd, 1, "", "bad")
+            raise subprocess.TimeoutExpired("bench", 1)
+        _, sent = self.run_with_webhook(bench)
+        risks = [m for m in sent if m.startswith("위험 신호")]
+        self.assertEqual(len(risks), 2)
+        self.assertIn("종료 코드 1", risks[0]); self.assertIn("시간 초과", risks[1])
+        self.assertIn("결과: failed", sent[-1])
+
+    def test_partial_outcome_reaches_webhook(self):
+        calls = iter([False, True])
+        def bench(cmd, *args, **kwargs):
+            return self.success(cmd) if next(calls) else subprocess.CompletedProcess(cmd, 1, "", "bad")
+        _, sent = self.run_with_webhook(bench)
+        self.assertIn("결과: partial", sent[-1])
+
+    def test_webhook_failure_never_stops_measurement(self):
+        import urllib.error
+        ident, _ = self.run_with_webhook(self.success, urlopen=urllib.error.URLError("down"))
+        self.assertTrue((self.base / "done" / (ident + ".yaml")).is_file())
+        meta = json.loads((self.base / "results" / ident / "meta.json").read_text())
+        self.assertEqual(meta["ok"], 2)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux flock")
+    def test_recovered_running_request_reaches_webhook_as_failed(self):
+        self.settings["discord_webhook_url"] = "https://discord.test/hook"
+        ident = self.submit()
+        (self.base / "queue" / (ident + ".yaml")).rename(self.base / "running" / (ident + ".yaml"))
+        with patch("notify.send") as send, patch("worker.run_monitored", side_effect=self.success), \
+                contextlib.redirect_stdout(io.StringIO()):
+            team.worker(self.settings, self.base, once=True)
+        self.assertIn("결과: failed", send.call_args_list[0].args[1])
+        self.assertIn(ident, send.call_args_list[0].args[1])
+
+    def test_risk_notices_stop_at_limit_and_end_notice_counts_failures(self):
+        self.settings["discord_webhook_url"] = "https://discord.test/hook"
+        args = argparse.Namespace(request="baseline", model=None, threads=[1, 2, 4],
+                                  repeat=1, prompt_tokens=[8], gen_tokens=[4])
+        with contextlib.redirect_stdout(io.StringIO()):
+            ident = team.submit(args, self.settings, self.base)
+        sent = []
+        with patch("worker.run_monitored", side_effect=lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 1, "", "bad")), \
+                patch("notify.send", side_effect=lambda settings, text: sent.append(text)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        self.assertEqual(sum(m.startswith("위험 신호") for m in sent), team.RISK_NOTICE_LIMIT)
+        self.assertIn("실패 조건: 6개", sent[-1])
+
+    def test_risk_notice_names_load_mode(self):
+        notices = []
+        with patch("notify.send", side_effect=lambda settings, text: notices.append(text)):
+            team.risk_notifier({}, "req")(dict(order=2, total=4, test="tg4", threads=1, reason="시간 초과", load_mode="dio"))
+        self.assertIn("스레드 1 dio 실패 (시간 초과)", notices[0])
+
+    def test_interrupt_before_finish_defers_end_notice_to_recovery(self):
+        ident = self.submit()
+        sent = []
+        with patch("team.run_request", side_effect=KeyboardInterrupt), \
+                patch("notify.send", side_effect=lambda settings, text: sent.append(text)), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        self.assertTrue(sent[-1].startswith("측정 중단"))
+        self.assertFalse(any(m.startswith("측정 종료") for m in sent))
+        self.assertTrue((self.base / "running" / (ident + ".yaml")).is_file())
+
+    def test_no_webhook_setting_sends_nothing(self):
+        ident = self.submit()
+        with patch("worker.run_monitored", side_effect=self.success), \
+                patch("notify.urllib.request.urlopen") as urlopen, contextlib.redirect_stdout(io.StringIO()):
+            team.process_one(self.base / "queue" / (ident + ".yaml"), self.settings, self.base)
+        urlopen.assert_not_called()
+
     @unittest.skipUnless(sys.platform == "linux", "Linux flock")
     def test_second_worker_cannot_recover_running_request(self):
         import fcntl

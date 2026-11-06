@@ -31,6 +31,14 @@ def as_list(x):
     return x if isinstance(x, list) else [x]
 
 
+def build_combos(req):
+    return [(p,n,t,mode) for p,n,t in make_combos(req) for mode in req.get('load_mode',['auto'])]
+
+
+def condition_count(req):
+    return len(build_combos(req))
+
+
 def make_combos(req):
     combos = []
     for t in as_list(req["threads"]):
@@ -118,7 +126,7 @@ def write_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def run_request(request_path, settings, req_id=None):
+def run_request(request_path, settings, req_id=None, on_condition_failed=None):
     request_path = Path(request_path)
     req = load_yaml(request_path)
     validate_loading(req)
@@ -214,12 +222,17 @@ def run_request(request_path, settings, req_id=None):
     }
     write_json(out_dir / "meta.json", meta)
 
-    combos = [(p,n,t,mode) for p,n,t in make_combos(req) for mode in req.get('load_mode',['auto'])]
+    combos = build_combos(req)
     if req.get("shuffle"):
         meta["seed"] = req.get("seed", random.randrange(2 ** 32))
         random.Random(meta["seed"]).shuffle(combos)
     write_json(out_dir / "meta.json", meta)
     print(f"요청 {req_id}: 총 {len(combos)}개 조건")
+
+    def report_failure(context, mode, reason):
+        if on_condition_failed:
+            on_condition_failed({**context, "total": len(combos), "reason": reason,
+                                 "load_mode": mode if 'load_mode' in req else None})
 
     with open(out_dir / "run.log", "w", encoding="utf-8") as log:
         for i, (p, n, t, mode) in enumerate(combos, 1):
@@ -245,6 +258,7 @@ def run_request(request_path, settings, req_id=None):
                 log.write("  실패: 조건 실행 시간 초과\n")
                 log.flush()
                 write_json(out_dir / "meta.json", meta)
+                report_failure(context, mode, "시간 초과")
                 continue
             summary = getattr(result, "monitor_summary", {**context, "status": "unavailable", "samples": 0})
             meta["cpu_monitor"]["conditions"].append(summary)
@@ -262,6 +276,7 @@ def run_request(request_path, settings, req_id=None):
                 log.flush()
                 print(f"[{i}/{len(combos)}] 실패: p={p} n={n} t={t}")
                 write_json(out_dir / "meta.json", meta)
+                report_failure(context, mode, f"종료 코드 {result.returncode}")
                 continue
 
             rows = parse_rows(result.stdout, req_id, req["repeat"], i)
